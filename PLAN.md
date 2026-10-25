@@ -150,11 +150,12 @@ The full threat model is in [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
 lists/
 ├─ src/
 │  ├─ core/        # data model, Yjs document, operations (add/check/reorder)
-│  ├─ crypto/      # key derivation, encryption, signing, link format   (phase 2)
-│  ├─ sync/        # pluggable transports: webrtc.ts, nostr.ts          (phases 2–3)
-│  ├─ storage/     # IndexedDB persistence, export/import
+│  ├─ crypto/      # key derivation, sealed messages, share links
+│  ├─ sync/        # sync session and pluggable transports (WebRTC, tabs; Nostr in phase 3)
+│  ├─ storage/     # IndexedDB persistence, registry of spaces
 │  └─ ui/          # Svelte components
-├─ tests/
+├─ tests/          # unit tests (Vitest)
+├─ e2e/            # end-to-end tests (Playwright) with a simulated Nostr relay
 ├─ docs/           # ARCHITECTURE.md, PROTOCOL.md, THREAT_MODEL.md
 ├─ SECURITY.md  CONTRIBUTING.md
 └─ .github/        # CI, CodeQL, Pages deploy, Dependabot
@@ -180,11 +181,22 @@ lists/
 - [x] Strict CSP, no third-party requests at all
 - [x] Unit tests for the data model
 
-### Phase 2: Sharing and real time
+### Phase 2: Sharing and real time ✅ (prototype)
 
-- [ ] Crypto layer and share link (plus a QR code)
-- [ ] WebRTC sync via Trystero
-- [ ] Playwright test with two browsers
+- [x] Crypto layer: HKDF key derivation, AES-256-GCM sealed messages bound to their
+      room, size-bucket padding
+- [x] Share link with the key in the URL fragment, plus a QR code and the native share
+      sheet
+- [x] Several spaces per device (local and shared), with a space switcher
+- [x] WebRTC sync via Trystero, with signalling over public Nostr relays
+- [x] Live sync between tabs in the same browser (BroadcastChannel)
+- [x] Connection status in the UI
+- [x] CSP generated from the relay list, so the app can reach nothing else
+- [x] Playwright tests with two browsers syncing over real WebRTC, using a simulated
+      relay so CI needs no internet
+
+Known limitations until phase 3: people must have the app open at the same time, and
+networks that block direct WebRTC connections cannot sync (there is no TURN server).
 
 ### Phase 3: Offline delivery
 
@@ -195,7 +207,7 @@ lists/
 ### Phase 4: Hardening
 
 - [ ] Read-only links, passphrases, key rotation
-- [ ] Padding of encrypted messages
+- [x] Padding of encrypted messages (done in phase 2)
 - [ ] JSON export/import
 - [ ] External security review, or peer review of the crypto
 

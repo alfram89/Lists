@@ -1,80 +1,83 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import type { Space } from '../core/space';
-  import { currentSpaceId, openSpace, type OpenSpace } from '../storage/local';
+  import { AppState } from './app-state.svelte';
   import Overview from './Overview.svelte';
   import ListView from './ListView.svelte';
 
-  let opened = $state.raw<OpenSpace | null>(null);
-  let loadError = $state<string | null>(null);
-  // Bumped on every document change; the derived views below re-read the space.
-  let version = $state(0);
-  let openListId = $state<string | null>(null);
-  let unsubscribe: (() => void) | undefined;
+  interface OpenList {
+    space: string;
+    list: string;
+  }
+
+  const app = new AppState();
+  let openList = $state<OpenList | null>(null);
 
   const lists = $derived.by(() => {
-    void version;
-    return opened ? opened.space.getLists() : [];
+    void app.version;
+    return app.space ? app.space.getLists() : [];
   });
-  const currentList = $derived(lists.find((l) => l.id === openListId));
+  // A list only shows while its own space is open, so switching spaces returns
+  // to the overview.
+  const currentList = $derived(
+    openList?.space === app.spaceId ? lists.find((l) => l.id === openList?.list) : undefined,
+  );
+
+  function readState(state: unknown): OpenList | null {
+    const s = state as Partial<OpenList> | null;
+    return typeof s?.space === 'string' && typeof s.list === 'string'
+      ? { space: s.space, list: s.list }
+      : null;
+  }
 
   // Navigation uses history state rather than the URL, so the phone's back button
   // works without putting list ids in the address. The URL fragment is reserved
-  // for share keys (phase 2).
-  function openList(id: string) {
-    openListId = id;
-    history.pushState({ list: id }, '');
+  // for share links.
+  function showList(id: string) {
+    if (!app.spaceId) return;
+    // A plain object: history state is structured-cloned, which proxies cannot be.
+    const entry = { space: app.spaceId, list: id };
+    history.pushState(entry, '');
+    openList = entry;
     window.scrollTo(0, 0);
   }
 
   function closeList() {
-    if (history.state?.list) history.back();
-    else openListId = null;
+    if (readState(history.state)) history.back();
+    else openList = null;
   }
 
   function onPopState(event: PopStateEvent) {
-    const id = (event.state as { list?: unknown } | null)?.list;
-    openListId = typeof id === 'string' ? id : null;
+    openList = readState(event.state);
   }
 
   onMount(() => {
-    // Reopen the same list after a reload; otherwise start on the overview.
-    const restored = (history.state as { list?: unknown } | null)?.list;
-    if (typeof restored === 'string') openListId = restored;
-    else history.replaceState({ list: null }, '');
-    openSpace(currentSpaceId())
-      .then((result) => {
-        opened = result;
-        unsubscribe = result.space.onChange(() => version++);
-      })
-      .catch((error: unknown) => {
-        console.error(error);
-        loadError =
-          'Could not open local storage. Private browsing or blocked site data can cause this.';
-      });
+    // After a reload, history.state still names the list that was open.
+    openList = readState(history.state);
+    if (!openList) history.replaceState(null, '');
+    void app.start();
   });
 
-  onDestroy(() => {
-    unsubscribe?.();
-    void opened?.close();
-  });
-
-  function space(): Space {
-    return opened!.space;
-  }
+  onDestroy(() => app.destroy());
 </script>
 
 <svelte:window onpopstate={onPopState} />
 
 <main>
-  {#if loadError}
-    <p class="status" role="alert">{loadError}</p>
-  {:else if !opened}
+  {#if app.notice}
+    <div class="notice" role="alert">
+      <span>{app.notice}</span>
+      <button class="btn" onclick={() => (app.notice = null)}>OK</button>
+    </div>
+  {/if}
+
+  {#if app.error}
+    <p class="status" role="alert">{app.error}</p>
+  {:else if !app.space}
     <p class="status">Loading…</p>
   {:else if currentList}
-    <ListView list={currentList} space={space()} onBack={closeList} />
+    <ListView list={currentList} space={app.space} onBack={closeList} />
   {:else}
-    <Overview {lists} space={space()} onOpen={openList} />
+    <Overview {app} {lists} space={app.space} onOpen={showList} />
   {/if}
 </main>
 
@@ -89,5 +92,17 @@
     margin-top: 3rem;
     text-align: center;
     color: var(--muted);
+  }
+
+  .notice {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.5rem 0.5rem 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--accent-soft);
   }
 </style>

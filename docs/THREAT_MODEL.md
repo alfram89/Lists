@@ -1,9 +1,10 @@
 # Threat model
 
 This document says what Lists protects, against whom, and what it does not protect.
-It covers the full design. Items marked _(phase N)_ are not built yet; the current
-prototype (phases 0–1) stores data only on the device and makes no network requests
-at all.
+It covers the full design. Items marked _(phase N)_ are not built yet. As of phase 2,
+a space that has never been shared stays on the device and makes no network requests
+at all. A shared space syncs peer to peer over WebRTC, with public Nostr relays used
+only for signalling.
 
 ## Assets
 
@@ -20,6 +21,7 @@ at all.
 | Link holder                       | Reads and writes the shared space              | Yes, fully. The link is the credential |
 | Read-only link holder _(phase 4)_ | Reads, cannot write                            | For reading only                       |
 | Relay / signalling operator       | Sees encrypted messages, room ids, IPs, timing | No                                     |
+| STUN server operator              | Sees the IP addresses of peers, and when       | No                                     |
 | Network attacker                  | Sees and alters traffic                        | No                                     |
 | Static host (GitHub Pages)        | Serves the app code                            | Partly: see "Supply chain"             |
 | Dependency authors                | Code that runs in the app or the build         | Partly: see "Supply chain"             |
@@ -29,11 +31,16 @@ at all.
 
 ### Confidentiality of content
 
-- Content is encrypted end to end with AES-256-GCM before it leaves the device
-  _(phase 2)_.
+- Content is sealed with AES-256-GCM before it leaves the device, on every transport,
+  including the WebRTC data channel (which adds its own DTLS encryption).
 - The key exists only in the link fragment and in the browser's local storage. The
-  fragment is never sent to the host serving the app.
-- Relays receive only ciphertext and a room id derived one-way from the key.
+  fragment is never sent to the host serving the app, and the app removes it from the
+  address bar after reading it.
+- Signalling relays see only a topic derived one-way from the room id, plus WebRTC
+  offers that Trystero encrypts with a password derived from the secret. No list data
+  passes through them.
+- Transports receive only the public room id and the signalling password, never the
+  encryption key.
 
 ### Integrity
 
@@ -49,14 +56,20 @@ at all.
 - No accounts, no e-mail addresses, no phone numbers, no analytics, no telemetry.
 - Each space uses its own derived Nostr key, so different lists cannot be linked
   through keys.
-- Size-bucket padding hides exactly how much changed _(phase 4)_.
-- **Not protected:** relays and signalling servers see the IP addresses of peers and
-  when they are active. WebRTC reveals the IP addresses of peers to each other. Users
-  who need to hide this can use a VPN or Tor, or run their own relay.
+- Size-bucket padding hides exactly how much changed.
+- Only spaces that have been shared ever connect to anything. A local space opens no
+  connections, and this is checked by an end-to-end test.
+- **Not protected:** signalling relays and STUN servers (Cloudflare, Google) see the
+  IP addresses of peers and when they are online. WebRTC reveals the IP addresses of
+  peers to each other, which is expected between people who share a list. Users who
+  need to hide this can use a VPN or Tor, or run their own relay.
 
 ### Availability
 
 - Data is always kept locally in IndexedDB, so the app works without any network.
+- **Phase 2 limitation:** changes sync only while two people have the app open at the
+  same time, and only if their networks allow a direct WebRTC connection (there is no
+  TURN server). The Nostr mailbox in phase 3 removes both limitations.
 - Several relays are used at once, so losing one is not fatal _(phase 3)_.
 - **Not guaranteed:** public relays may delete data at any time. Snapshots and JSON
   export mitigate this _(phases 3–4)_.
@@ -79,12 +92,13 @@ reason the project keeps its dependency footprint small.
 
 Mitigations:
 
-- **Strict CSP** (`default-src 'none'`, `script-src 'self'`, `connect-src 'self'`). The
-  app cannot load third-party code or send data to any host that is not listed. Phases
-  2–3 will add only the specific signalling and relay endpoints, and the user can
-  inspect them.
-- Few runtime dependencies (currently `yjs`, `y-indexeddb`, `fractional-indexing`),
-  exact version pins, a committed lockfile, Dependabot and CodeQL.
+- **Strict CSP** (`default-src 'none'`, `script-src 'self'`). `connect-src` allows only
+  the app itself and the signalling relays in `src/sync/config.ts`; the policy is
+  generated from that file, so the code and the policy cannot drift apart. CSP does
+  not govern WebRTC, so peer and STUN connections are limited by the code instead.
+- Few runtime dependencies: `yjs`, `y-indexeddb`, `fractional-indexing`, `trystero`
+  (with `@noble/secp256k1`) and `uqr`. Exact version pins, a committed lockfile,
+  install scripts disabled, Dependabot with a cooldown, and CodeQL.
 - GitHub Actions use least-privilege tokens and are pinned to commit SHAs.
 - Planned: reproducible builds, release attestations, and a downloadable build that can
   be served from your own machine or host.

@@ -3,29 +3,33 @@
 Private shopping lists and checklists that you can share with a link. No accounts,
 no tracking, and no backend server that can read your lists.
 
-> **Status: early prototype (phases 0–1).** Lists are stored only on your device.
-> Encrypted sharing and real-time sync are next. See [`PLAN.md`](PLAN.md).
+> **Status: prototype (phases 0–2).** Sharing works peer to peer while people have
+> the app open at the same time. Delivery to people who are offline comes in phase 3.
+> See [`PLAN.md`](PLAN.md).
 
 ## Features
 
 - Several lists, each with free-text items you can check off
 - Edit, reorder and delete items; "clear completed" and "uncheck all"
+- **Share a set of lists with a link or QR code.** Everyone with the link sees changes
+  in real time and can check off or add items
+- End-to-end encrypted: the key is in the link, never on a server
+- Several spaces, for example one private and one shared with your household
 - Works offline and can be installed to your home screen (PWA)
 - Light and dark mode, follows your system setting
-- Nothing is sent anywhere: a strict Content Security Policy blocks all third-party
-  requests
+- Lists you have not shared never leave your device; a strict Content Security Policy
+  blocks everything except the signalling relays
 
-Coming next: share a link so others can see and edit the same lists in real time,
-end-to-end encrypted, synced peer-to-peer and through public relays that see only
-ciphertext.
-
-## How it will work
+## How it works
 
 ```
 Your browser ──► Yjs CRDT ──► AES-GCM encryption ──► WebRTC (peers online)
-                    │                              └► Nostr relays (offline delivery)
+                    │                              └► Nostr relays (offline delivery, phase 3)
                     └► IndexedDB (local copy)
 ```
+
+Public Nostr relays are only used so devices can find each other (signalling). The
+list data itself travels directly between devices, encrypted.
 
 The encryption key lives in the part of the link after `#`, which browsers never send
 to any server. Details: [`PLAN.md`](PLAN.md), [`docs/PROTOCOL.md`](docs/PROTOCOL.md)
@@ -39,6 +43,7 @@ Requires Node.js 22 or newer.
 npm ci
 npm run dev       # start the dev server
 npm test          # run unit tests
+npm run test:e2e  # run end-to-end tests (Playwright, Chromium)
 npm run check     # type-check
 npm run build     # production build in dist/
 ```

@@ -1,10 +1,16 @@
 <script lang="ts">
   import { MAX_LIST_NAME_LENGTH, type List, type Space } from '../core/space';
   import { requestPersistentStorage } from '../storage/local';
+  import type { AppState } from './app-state.svelte';
   import Icon from './Icon.svelte';
+  import SpaceHeader from './SpaceHeader.svelte';
 
-  let { lists, space, onOpen }: { lists: List[]; space: Space; onOpen: (id: string) => void } =
-    $props();
+  let {
+    app,
+    lists,
+    space,
+    onOpen,
+  }: { app: AppState; lists: List[]; space: Space; onOpen: (id: string) => void } = $props();
 
   let newName = $state('');
 
@@ -24,9 +30,7 @@
   }
 </script>
 
-<header>
-  <h1>Lists</h1>
-</header>
+<SpaceHeader {app} />
 
 <form class="new-list" onsubmit={create}>
   <label class="visually-hidden" for="new-list">New list name</label>
@@ -44,10 +48,19 @@
 
 {#if lists.length === 0}
   <div class="empty">
-    <p>No lists yet.</p>
-    <p class="muted">
-      Everything is stored only on this device. Sharing with end-to-end encryption is coming next.
-    </p>
+    {#if app.sync}
+      <p>No lists here yet.</p>
+      <p class="muted">
+        If you just opened a share link, the lists appear as soon as someone who has them opens the
+        app. Keep this page open.
+      </p>
+    {:else}
+      <p>No lists yet.</p>
+      <p class="muted">
+        Everything is stored only on this device until you share it. Shared lists are end-to-end
+        encrypted.
+      </p>
+    {/if}
   </div>
 {:else}
   <ul class="lists">
@@ -64,15 +77,6 @@
 {/if}
 
 <style>
-  header {
-    padding: 0.5rem 0 0.75rem;
-  }
-
-  h1 {
-    margin: 0;
-    font-size: 1.75rem;
-  }
-
   .new-list {
     display: flex;
     gap: 0.5rem;

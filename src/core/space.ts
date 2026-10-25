@@ -8,7 +8,7 @@ import { randomId } from './id';
  *
  * Document layout (schema version 1):
  *
- *   meta:  Y.Map  { schema: 1 }
+ *   meta:  Y.Map  { schema: 1, name?: string }
  *   lists: Y.Map<listId, Y.Map {
  *            name: string, createdAt: number, order: string,
  *            items: Y.Map<itemId, Y.Map {
@@ -59,19 +59,36 @@ interface Ordered {
 export class Space {
   readonly doc: Y.Doc;
   private readonly lists: Y.Map<YList>;
+  private readonly meta: Y.Map<unknown>;
 
   constructor(doc: Y.Doc = new Y.Doc()) {
     this.doc = doc;
     this.lists = doc.getMap<YList>('lists');
-    const meta = doc.getMap<unknown>('meta');
-    if (!meta.has('schema')) meta.set('schema', SCHEMA_VERSION);
+    this.meta = doc.getMap<unknown>('meta');
+    if (!this.meta.has('schema')) this.meta.set('schema', SCHEMA_VERSION);
   }
 
   /** Calls `listener` after every change, local or remote. Returns an unsubscribe function. */
   onChange(listener: () => void): () => void {
     const handler = () => listener();
     this.lists.observeDeep(handler);
-    return () => this.lists.unobserveDeep(handler);
+    this.meta.observe(handler);
+    return () => {
+      this.lists.unobserveDeep(handler);
+      this.meta.unobserve(handler);
+    };
+  }
+
+  // ---- Space ---------------------------------------------------------------
+
+  /** The space's display name, shared with everyone who has the link. '' if unset. */
+  getName(): string {
+    return str(this.meta.get('name')).slice(0, MAX_LIST_NAME_LENGTH);
+  }
+
+  setName(name: string): void {
+    const clean = cleanText(name, MAX_LIST_NAME_LENGTH);
+    if (clean) this.meta.set('name', clean);
   }
 
   // ---- Reading -------------------------------------------------------------
