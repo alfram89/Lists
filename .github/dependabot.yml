@@ -10,6 +10,11 @@ updates:
     groups:
       dev-dependencies:
         dependency-type: development
+    ignore:
+      # svelte-check only supports TypeScript 5 and 6 (peer dependency). Remove this
+      # once a svelte-check release supports TypeScript 7.
+      - dependency-name: typescript
+        versions: ['>=7']
   - package-ecosystem: github-actions
     directory: /
     schedule:
