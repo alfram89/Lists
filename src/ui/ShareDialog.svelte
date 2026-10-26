@@ -67,8 +67,8 @@
   {/if}
 
   <p class="note">
-    The key is in the part of the link after “#”, which is never sent to any server. Changes sync
-    live while people have the app open at the same time.
+    The key is in the part of the link after “#”, which is never sent to any server. Changes sync in
+    real time, and reach others the next time they open the app.
   </p>
 </dialog>
 

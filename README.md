@@ -3,8 +3,8 @@
 Private shopping lists and checklists that you can share with a link. No accounts,
 no tracking, and no backend server that can read your lists.
 
-> **Status: prototype (phases 0–2).** Sharing works peer to peer while people have
-> the app open at the same time. Delivery to people who are offline comes in phase 3.
+> **Status: prototype (phases 0–3).** Sharing works in real time between people who
+> are online, and changes reach everyone else the next time they open the app.
 > See [`PLAN.md`](PLAN.md).
 
 ## Features
@@ -24,12 +24,13 @@ no tracking, and no backend server that can read your lists.
 
 ```
 Your browser ──► Yjs CRDT ──► AES-GCM encryption ──► WebRTC (peers online)
-                    │                              └► Nostr relays (offline delivery, phase 3)
+                    │                              └► Nostr relays (encrypted mailbox)
                     └► IndexedDB (local copy)
 ```
 
-Public Nostr relays are only used so devices can find each other (signalling). The
-list data itself travels directly between devices, encrypted.
+When people are online at the same time, changes travel directly between their
+devices. Every change is also stored, encrypted, on public Nostr relays, so whoever
+opens the app later gets it too. The relays only ever see ciphertext.
 
 The encryption key lives in the part of the link after `#`, which browsers never send
 to any server. Details: [`PLAN.md`](PLAN.md), [`docs/PROTOCOL.md`](docs/PROTOCOL.md)

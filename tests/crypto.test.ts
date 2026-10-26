@@ -51,6 +51,9 @@ describe('key derivation', () => {
     expect(keys.signalPassword).toMatchInlineSnapshot(
       `"7JOt4KZioVaA2KtKdUgyIzHA0RQMeZ6y1F4M6N7RxsA"`,
     );
+    expect(keys.nostrPubkey).toMatchInlineSnapshot(
+      `"2e96ae1764d9be7306cd7bc056626d378e89e6fda1223842cbf3d39109466fe7"`,
+    );
   });
 
   it('rejects secrets of the wrong length', async () => {

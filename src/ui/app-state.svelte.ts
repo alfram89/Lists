@@ -3,7 +3,9 @@ import { deriveKeys, generateSecret } from '../crypto/keys';
 import { buildShareLink, parseShareFragment } from '../crypto/link';
 import { deleteSpaceData, openSpace, type OpenSpace } from '../storage/local';
 import { SpaceRegistry } from '../storage/spaces';
+import { RELAY_URLS } from '../sync/config';
 import { localChannelTransport } from '../sync/local-channel';
+import { RelayMailbox, type MailboxStatus } from '../sync/mailbox';
 import { SyncSession, type SyncStatus } from '../sync/session';
 import type { TransportFactory } from '../sync/transport';
 import { webrtcTransport } from '../sync/webrtc';
@@ -29,11 +31,14 @@ export class AppState {
   version = $state(0);
   /** Sync status of the current space, or null if it is not shared. */
   sync = $state<SyncStatus | null>(null);
+  /** Relay mailbox status of the current space, or null if it is not shared. */
+  relay = $state<MailboxStatus | null>(null);
   spaces = $state<SpaceSummary[]>([]);
   error = $state<string | null>(null);
   notice = $state<string | null>(null);
 
   private session: SyncSession | null = null;
+  private mailbox: RelayMailbox | null = null;
   private cleanups: (() => void)[] = [];
   private switchToken = 0;
 
@@ -60,6 +65,7 @@ export class AppState {
     window.addEventListener('hashchange', this.onHashChange);
     window.addEventListener('pagehide', this.onPageHide);
     window.addEventListener('pageshow', this.onPageShow);
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
     const joined = this.consumeShareLink();
     await this.switchTo(joined ?? this.registry.currentId);
   }
@@ -129,6 +135,7 @@ export class AppState {
     window.removeEventListener('hashchange', this.onHashChange);
     window.removeEventListener('pagehide', this.onPageHide);
     window.removeEventListener('pageshow', this.onPageShow);
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
     void this.closeCurrent();
   }
 
@@ -144,12 +151,20 @@ export class AppState {
     this.session = session;
     this.sync = session.status;
     this.cleanups.push(session.onStatus((status) => (this.sync = status)));
+
+    const mailbox = new RelayMailbox(doc, keys, { urls: RELAY_URLS });
+    this.mailbox = mailbox;
+    this.relay = mailbox.status;
+    this.cleanups.push(mailbox.onStatus((status) => (this.relay = status)));
   }
 
   private stopSync() {
     this.session?.destroy();
     this.session = null;
     this.sync = null;
+    this.mailbox?.destroy();
+    this.mailbox = null;
+    this.relay = null;
   }
 
   private closeCurrent(): Promise<void> {
@@ -211,6 +226,10 @@ export class AppState {
   // Leave the rooms when the page is hidden for good or put in the back/forward
   // cache, and rejoin if it comes back.
   private readonly onPageHide = () => this.stopSync();
+  // Mobile browsers suspend hidden pages, so send pending changes immediately.
+  private readonly onVisibilityChange = () => {
+    if (document.visibilityState === 'hidden') this.mailbox?.flushNow();
+  };
   private readonly onPageShow = (event: PageTransitionEvent) => {
     if (event.persisted) void this.startSync();
   };

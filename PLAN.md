@@ -195,18 +195,31 @@ lists/
 - [x] Playwright tests with two browsers syncing over real WebRTC, using a simulated
       relay so CI needs no internet
 
-Known limitations until phase 3: people must have the app open at the same time, and
-networks that block direct WebRTC connections cannot sync (there is no TURN server).
+Phase 2 required people to have the app open at the same time, and could not sync
+across networks that block direct WebRTC connections. Phase 3 removed both limits.
 
-### Phase 3: Offline delivery
+### Phase 3: Offline delivery ✅ (prototype)
 
-- [ ] Nostr transport, snapshots and compaction
-- [ ] Relay selection
-- [ ] Sync status in the UI ("synced with 3 of 4 relays")
+- [x] Nostr mailbox: every change is sealed and published to five relays, signed with a
+      per-room key derived from the link
+- [x] Snapshots that replace each other (addressable events), with updates expiring
+      after 14 days
+- [x] A shadow copy of what the relays hold, so anything they lack (offline edits,
+      failed sends, edits from before sharing) is uploaded on the next open
+- [x] Retries with backoff, and sending immediately when the page is hidden
+- [x] Sync status in the UI ("syncing…", "saving…", "up to date", "offline"), with
+      relay details on hover
+- [x] Unit tests against in-memory relays that verify signatures, and an end-to-end
+      test where the recipient opens the link after the sender has left
+
+Moved to phase 4: **relay selection.** The Content Security Policy only allows the
+built-in relays. Letting users add their own means allowing any `wss:` host, which
+weakens that protection, so it needs a deliberate decision.
 
 ### Phase 4: Hardening
 
 - [ ] Read-only links, passphrases, key rotation
+- [ ] Relay selection (see the CSP trade-off under phase 3)
 - [x] Padding of encrypted messages (done in phase 2)
 - [ ] JSON export/import
 - [ ] External security review, or peer review of the crypto

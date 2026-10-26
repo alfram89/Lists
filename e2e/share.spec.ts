@@ -61,15 +61,15 @@ test('two devices share a list in real time over WebRTC', async ({ browser }) =>
 
   const link = await shareLink(alice);
   expect(link).toMatch(/#v=1&s=[\w-]{22}&k=[\w-]{43}$/);
-  await expect(alice.getByRole('status')).toHaveText('Shared · no one else online right now');
+  await expect(alice.getByRole('status')).toHaveText('Shared · up to date');
 
   // Bob opens the link on another device.
   await bob.goto(link);
   await expect(bob.locator('.list-card')).toHaveText(/Groceries/);
   await expect(bob.getByRole('heading', { level: 1 })).toHaveText('Shared lists');
   expect(new URL(bob.url()).hash).toBe(''); // the key is removed from the address bar
-  await expect(bob.getByRole('status')).toHaveText('Shared · connected to 1 other device');
-  await expect(alice.getByRole('status')).toHaveText('Shared · connected to 1 other device');
+  await expect(bob.getByRole('status')).toHaveText('Shared · up to date · 1 other device online');
+  await expect(alice.getByRole('status')).toHaveText('Shared · up to date · 1 other device online');
 
   // Bob adds an item; Alice sees it.
   await bob.locator('.list-card').click();
@@ -160,4 +160,56 @@ test('reload keeps the open list, and leaving a space removes it', async ({ brow
   await page.locator('.space-btn').click();
   await expect(page.locator('.space-option')).toHaveCount(1);
   await context.close();
+});
+
+test('changes reach someone who opens the link after the sender has left', async ({ browser }) => {
+  const relay = new MockRelay();
+  const aliceContext = await browser.newContext();
+  await relay.attach(aliceContext);
+  const alice = await aliceContext.newPage();
+  const errors = collectErrors(alice);
+
+  await alice.goto('/');
+  const link = await shareLink(alice);
+  await createList(alice, 'Groceries', ['Milk', 'Bread']);
+  await alice.getByText('Bread').click();
+  await alice.getByRole('button', { name: 'Back to all lists' }).click();
+  await expect(alice.getByRole('status')).toHaveText('Shared · up to date');
+  await aliceContext.close();
+
+  // Nothing on the relay is readable: only ciphertext under a pseudonymous key.
+  const mailbox = relay.events.filter((e) => e.kind === 30078);
+  expect(mailbox.length).toBeGreaterThan(0);
+  for (const event of mailbox) {
+    expect(event.content).not.toMatch(/Milk|Bread|Groceries/);
+    expect(atob(event.content)).not.toMatch(/Milk|Bread|Groceries/);
+  }
+
+  // Bob opens the link later, with Alice offline.
+  const bobContext = await browser.newContext();
+  await relay.attach(bobContext);
+  const bob = await bobContext.newPage();
+  errors.push(...collectErrors(bob));
+  await bob.goto(link);
+  await bob.locator('.list-card').click();
+  await expect(bob.locator('ul.items').first().locator('.text')).toHaveText(['Milk']);
+  await expect(bob.locator('#done-items .text')).toHaveText(['Bread']);
+
+  // Bob's reply waits on the relay for Alice.
+  await bob.getByPlaceholder('Add an item').fill('Eggs');
+  await bob.keyboard.press('Enter');
+  await bob.getByRole('button', { name: 'Back to all lists' }).click();
+  await expect(bob.getByRole('status')).toHaveText('Shared · up to date');
+  await bobContext.close();
+
+  const aliceAgain = await browser.newContext();
+  await relay.attach(aliceAgain);
+  // A fresh context has no local data, so join through the link again.
+  const page = await aliceAgain.newPage();
+  await page.goto(link);
+  await page.locator('.list-card').click();
+  await expect(page.locator('ul.items').first().locator('.text')).toHaveText(['Milk', 'Eggs']);
+
+  expect(errors).toEqual([]);
+  await aliceAgain.close();
 });
