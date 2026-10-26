@@ -3,7 +3,7 @@
 Private shopping lists and checklists that you can share with a link. No accounts,
 no tracking, and no backend server that can read your lists.
 
-> **Status: prototype (phases 0–3).** Sharing works in real time between people who
+> **Status: prototype (phases 0–4).** Sharing works in real time between people who
 > are online, and changes reach everyone else the next time they open the app.
 > See [`PLAN.md`](PLAN.md).
 
@@ -14,6 +14,9 @@ no tracking, and no backend server that can read your lists.
 - **Share a set of lists with a link or QR code.** Everyone with the link sees changes
   in real time and can check off or add items
 - End-to-end encrypted: the key is in the link, never on a server
+- Optional passphrase on a share link, so a leaked link alone is useless
+- Reset a share link to cut off everyone who only has the old one
+- Export a space to a JSON file, and import it again
 - Several spaces, for example one private and one shared with your household
 - Works offline and can be installed to your home screen (PWA)
 - Light and dark mode, follows your system setting

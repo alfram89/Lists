@@ -24,7 +24,9 @@ src/sync/      SyncSession: keeps a Y.Doc in sync over any number of transports.
    │           nostr/: minimal Nostr client (events, signing, relay connections).
    │           config.ts lists every network endpoint; the CSP is built from it.
    │
-src/crypto/    Key derivation (HKDF), sealed messages (AES-GCM), share links.
+src/crypto/    Key derivation (HKDF), sealed messages (AES-GCM), share links,
+               passphrase wrapping (Argon2id).
+src/core/export.ts  JSON export/import of a space (content only, never keys).
 ```
 
 Rules:
@@ -81,6 +83,13 @@ each space's id, its secret if it has been shared, and a cached name for the swi
 - **Opening a link** registers the space, removes the fragment from the address bar and
   opens the space. It fills from the relay mailbox within seconds, or from a peer
   directly if one is online.
+- **Protected links** carry the secret wrapped with a passphrase; the app asks for it
+  before joining.
+- **Resetting the link** retires the key (a `Moved` notice to peers and on the relays)
+  and continues under a new one. Devices on the old key stop syncing and say so. A
+  link with a new key for a known space is only used after the user confirms it.
+- **Export/import** writes a space's lists to a JSON file; importing creates a new
+  local space from such a file.
 - **Leaving** a space deletes the local copy and the secret from this device only.
 
 Every shared space runs one `SyncSession` with two transports (BroadcastChannel for

@@ -25,6 +25,11 @@ export const MessageType = {
   StateResponse: 2,
   /** A Yjs state vector, asking the receiver for the updates the sender lacks. */
   StateRequest: 4,
+  /**
+   * The space has a new key (its link was reset). Peers still on this key stop
+   * syncing and tell the user to ask for the new link. No payload.
+   */
+  Moved: 5,
 } as const;
 
 export type MessageType = (typeof MessageType)[keyof typeof MessageType];

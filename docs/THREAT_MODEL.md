@@ -16,16 +16,16 @@ WebRTC signalling and store encrypted changes for people who are offline.
 
 ## Actors
 
-| Actor                             | Capabilities                                   | Trusted?                               |
-| --------------------------------- | ---------------------------------------------- | -------------------------------------- |
-| Link holder                       | Reads and writes the shared space              | Yes, fully. The link is the credential |
-| Read-only link holder _(phase 4)_ | Reads, cannot write                            | For reading only                       |
-| Relay / signalling operator       | Sees encrypted messages, room ids, IPs, timing | No                                     |
-| STUN server operator              | Sees the IP addresses of peers, and when       | No                                     |
-| Network attacker                  | Sees and alters traffic                        | No                                     |
-| Static host (GitHub Pages)        | Serves the app code                            | Partly: see "Supply chain"             |
-| Dependency authors                | Code that runs in the app or the build         | Partly: see "Supply chain"             |
-| Someone with the unlocked device  | Everything the browser stores                  | Out of scope                           |
+| Actor                              | Capabilities                                   | Trusted?                               |
+| ---------------------------------- | ---------------------------------------------- | -------------------------------------- |
+| Link holder                        | Reads and writes the shared space              | Yes, fully. The link is the credential |
+| Read-only link holder _(deferred)_ | Reads, cannot write                            | For reading only                       |
+| Relay / signalling operator        | Sees encrypted messages, room ids, IPs, timing | No                                     |
+| STUN server operator               | Sees the IP addresses of peers, and when       | No                                     |
+| Network attacker                   | Sees and alters traffic                        | No                                     |
+| Static host (GitHub Pages)         | Serves the app code                            | Partly: see "Supply chain"             |
+| Dependency authors                 | Code that runs in the app or the build         | Partly: see "Supply chain"             |
+| Someone with the unlocked device   | Everything the browser stores                  | Out of scope                           |
 
 ## Security goals and how they are met
 
@@ -54,7 +54,8 @@ WebRTC signalling and store encrypted changes for people who are offline.
   outsiders who try to overwrite the room's snapshot.
 - Associated data binds each message to its room, so messages cannot be replayed
   across rooms.
-- Read-only links add per-update signatures, so readers cannot write _(phase 4)_.
+- Read-only links would add per-update signatures, so readers cannot write
+  _(deferred)_.
 - Replaying an old update is harmless: Yjs updates are idempotent.
 
 ### Unlinkability and metadata
@@ -83,7 +84,9 @@ WebRTC signalling and store encrypted changes for people who are offline.
 - **Not guaranteed:** public relays may delete data at any time, rate-limit, or go
   away. Every device keeps a full local copy, uploads whatever the relays lack the next
   time it opens the app, and snapshots are refreshed daily while the space is in use.
-  JSON export _(phase 4)_ adds a manual backup.
+  JSON export adds a manual backup that does not depend on relays. Export files are
+  plain text: they contain list content (never keys), so they should be stored like
+  any other private document.
 - A malicious relay can withhold or delay events; other relays and direct peer
   connections compensate.
 - Browsers can evict site data. The app asks for persistent storage
@@ -126,10 +129,24 @@ Limitations:
 ## Known limitations of the link model
 
 - Anyone who gets the link has full access. Links can leak through chat backups, browser
-  history and screenshots. Mitigations: passphrase links and key rotation
-  _(phase 4)_.
+  history and screenshots. Mitigations:
+  - **Passphrase-protected links.** The key in the link is encrypted with a key derived
+    from a passphrase by Argon2id (64 MiB, 2 passes), which makes guessing expensive
+    even on GPUs. A leaked protected link is useless without the passphrase, as long
+    as the passphrase is strong and travels separately. A weak passphrase (a single
+    common word) can still be guessed offline by anyone holding the link.
+  - **Resetting the link** (key rotation) cuts off everyone who only has the old
+    link, from then on.
 - Access cannot be revoked for a single person. Rotation moves the space to a new key
-  that everyone else must receive again.
+  that everyone else must receive again. Whoever had the old key keeps what was in the
+  space up to that moment, on their device.
+- **Taking over a space by link.** Someone who knows a space id (from any old link)
+  could send a link with that id and their own key, hoping to receive whatever the
+  victim adds later. The app therefore never replaces a known space's key silently:
+  the user must confirm "Use the new link", with a warning to accept it only from a
+  person they trust.
+- Anyone with the old key can send a "moved" notice, which stops syncing on the old
+  key. This only affects people who already shared that key with them.
 - There is no forward secrecy: someone who later obtains the key can decrypt old
   messages still stored on relays. Updates expire after 14 days, but the latest
   snapshot, which holds the whole space, stays until a relay drops it. Leaving a space

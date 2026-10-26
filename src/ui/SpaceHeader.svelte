@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte';
+  import { ImportError, exportFileName } from '../core/export';
   import { MAX_LIST_NAME_LENGTH } from '../core/space';
   import type { AppState } from './app-state.svelte';
   import Icon from './Icon.svelte';
@@ -13,8 +14,11 @@
   let shareLink = $state<string | null>(null);
   let menuWrap: HTMLElement | undefined = $state();
   let nameInput: HTMLInputElement | undefined = $state();
+  let fileInput: HTMLInputElement | undefined = $state();
+  let busy = $state(false);
 
   const status = $derived.by(() => {
+    if (app.moved) return 'Shared · link was reset, not syncing';
     if (!app.sync) return 'Only on this device';
     const { devices } = app.sync;
     const relay = app.relay;
@@ -62,6 +66,51 @@
   async function create() {
     menuOpen = false;
     await app.createSpace();
+  }
+
+  async function resetLink() {
+    menuOpen = false;
+    const ok = confirm(
+      `Reset the share link for “${app.spaceName}”?\n\n` +
+        'The current link stops working. Everyone who should keep access needs the new link. ' +
+        'People with the old link keep the lists as they are now, but get no further changes.',
+    );
+    if (!ok) return;
+    busy = true;
+    try {
+      shareLink = await app.resetShareLink();
+    } finally {
+      busy = false;
+    }
+  }
+
+  function exportSpace() {
+    menuOpen = false;
+    const data = app.exportCurrent();
+    if (!data) return;
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = exportFileName(data);
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function startImport() {
+    menuOpen = false;
+    fileInput?.click();
+  }
+
+  async function importSelected(event: Event & { currentTarget: HTMLInputElement }) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = '';
+    if (!file) return;
+    try {
+      await app.importFile(await file.text());
+    } catch (error) {
+      app.notice = error instanceof ImportError ? error.message : 'The file could not be imported.';
+    }
   }
 
   async function remove() {
@@ -127,6 +176,11 @@
             <hr />
             <button onclick={create}>New space</button>
             <button onclick={startRename}>Rename this space</button>
+            <button onclick={exportSpace}>Export to file</button>
+            <button onclick={startImport}>Import from file…</button>
+            {#if app.isShared && !app.moved}
+              <button onclick={resetLink}>Reset share link…</button>
+            {/if}
             <button class="danger" onclick={remove}>
               {app.isShared ? 'Leave this space' : 'Delete this space'}
             </button>
@@ -134,7 +188,21 @@
         {/if}
       </div>
     {/if}
-    <button class="icon-btn share" aria-label="Share this space" onclick={share}>
+    <input
+      bind:this={fileInput}
+      class="visually-hidden"
+      type="file"
+      accept="application/json,.json"
+      tabindex="-1"
+      aria-hidden="true"
+      onchange={importSelected}
+    />
+    <button
+      class="icon-btn share"
+      aria-label="Share this space"
+      onclick={share}
+      disabled={busy || app.moved}
+    >
       <Icon name="share" />
     </button>
   </div>
@@ -142,7 +210,12 @@
 </header>
 
 {#if shareLink}
-  <ShareDialog link={shareLink} spaceName={app.spaceName} onClose={() => (shareLink = null)} />
+  <ShareDialog
+    link={shareLink}
+    spaceName={app.spaceName}
+    onProtect={(passphrase) => app.protectedShareLink(passphrase)}
+    onClose={() => (shareLink = null)}
+  />
 {/if}
 
 <style>

@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { fromBase64Url, toBase64Url } from '../src/crypto/encoding';
 import { SECRET_BYTES, deriveKeys, generateSecret } from '../src/crypto/keys';
 import { MAX_SEALED_BYTES, MessageType, open, paddedLength, seal } from '../src/crypto/seal';
-import { buildShareLink, parseShareFragment } from '../src/crypto/link';
+import {
+  buildProtectedLink,
+  buildShareLink,
+  parseLink,
+  parseShareFragment,
+} from '../src/crypto/link';
+import { WRAPPED_BYTES, unwrapSecret, wrapSecret } from '../src/crypto/passphrase';
 
 const bytes = (...values: number[]) => new Uint8Array(values);
 
@@ -135,4 +141,48 @@ describe('share links', () => {
     expect(parseShareFragment(`#v=1&s=${spaceId}`)).toBeNull();
     expect(parseShareFragment(`#v=1&s=${spaceId}&k=${k}`)).not.toBeNull();
   });
+});
+
+describe('passphrase-protected links', () => {
+  const spaceId = 'BBBBBBBBBBBBBBBBBBBBBB';
+
+  it('wraps and unwraps the secret, and rejects wrong passphrases', async () => {
+    const secret = generateSecret();
+    const wrapped = await wrapSecret(secret, 'correct horse battery', spaceId);
+    expect(wrapped.wrapped).toHaveLength(WRAPPED_BYTES);
+
+    // Normalisation: surrounding spaces and composed/decomposed forms match.
+    expect(await unwrapSecret(wrapped, '  correct horse battery ', spaceId)).toEqual(secret);
+    expect(await unwrapSecret(wrapped, 'correct horse batterY', spaceId)).toBeNull();
+    // Bound to its space: the same blob does not open for another space id.
+    expect(await unwrapSecret(wrapped, 'correct horse battery', 'C'.repeat(22))).toBeNull();
+  }, 30_000);
+
+  it('normalises Unicode', async () => {
+    const secret = generateSecret();
+    const wrapped = await wrapSecret(secret, 'blåbærsyltetøy', spaceId);
+    expect(await unwrapSecret(wrapped, 'blåbærsyltetøy', spaceId)).toEqual(secret);
+  }, 30_000);
+
+  it('rejects short passphrases and tampered data', async () => {
+    await expect(wrapSecret(generateSecret(), 'short', spaceId)).rejects.toThrow();
+    const wrapped = await wrapSecret(generateSecret(), 'long enough phrase', spaceId);
+    const tampered = new Uint8Array(wrapped.wrapped);
+    tampered[20]! ^= 1;
+    expect(
+      await unwrapSecret({ ...wrapped, wrapped: tampered }, 'long enough phrase', spaceId),
+    ).toBeNull();
+  }, 30_000);
+
+  it('builds and parses protected links', async () => {
+    const wrapped = await wrapSecret(generateSecret(), 'long enough phrase', spaceId);
+    const link = buildProtectedLink('https://example.org/lists/', { spaceId, ...wrapped });
+    expect(link).not.toMatch(/[&#]k=/);
+    const parsed = parseLink(new URL(link).hash);
+    expect(parsed).toEqual({ kind: 'protected', spaceId, ...wrapped });
+    // A protected link is not a plain one, and mixing both forms is rejected.
+    expect(parseShareFragment(new URL(link).hash)).toBeNull();
+    const k = toBase64Url(generateSecret());
+    expect(parseLink(`${new URL(link).hash}&k=${k}`)).toBeNull();
+  }, 30_000);
 });

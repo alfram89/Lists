@@ -1,20 +1,36 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { MIN_PASSPHRASE_LENGTH, normalizePassphrase } from '../crypto/passphrase';
   import Icon from './Icon.svelte';
   import QrCode from './QrCode.svelte';
 
-  let { link, spaceName, onClose }: { link: string; spaceName: string; onClose: () => void } =
-    $props();
+  let {
+    link,
+    spaceName,
+    onProtect,
+    onClose,
+  }: {
+    link: string;
+    spaceName: string;
+    onProtect: (passphrase: string) => Promise<string>;
+    onClose: () => void;
+  } = $props();
 
   let dialog: HTMLDialogElement | undefined = $state();
   let copied = $state(false);
+  let protecting = $state(false);
+  let passphrase = $state('');
+  let creating = $state(false);
+  let protectedLink = $state<string | null>(null);
+  const shownLink = $derived(protectedLink ?? link);
+  const passphraseOk = $derived(normalizePassphrase(passphrase).length >= MIN_PASSPHRASE_LENGTH);
   const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
 
   onMount(() => dialog?.showModal());
 
   async function copy() {
     try {
-      await navigator.clipboard.writeText(link);
+      await navigator.clipboard.writeText(shownLink);
       copied = true;
       setTimeout(() => (copied = false), 2000);
     } catch {
@@ -25,9 +41,22 @@
 
   async function shareNative() {
     try {
-      await navigator.share({ title: spaceName, url: link });
+      await navigator.share({ title: spaceName, url: shownLink });
     } catch {
       // Cancelled by the user.
+    }
+  }
+
+  async function createProtected(event: SubmitEvent) {
+    event.preventDefault();
+    if (!passphraseOk) return;
+    creating = true;
+    try {
+      protectedLink = await onProtect(passphrase);
+      protecting = false;
+      passphrase = '';
+    } finally {
+      creating = false;
     }
   }
 </script>
@@ -40,13 +69,20 @@
     </button>
   </div>
 
-  <p class="warning">
-    Anyone with this link can see and edit every list in this space. Send it only to people you
-    trust, through a private channel.
-  </p>
+  {#if protectedLink}
+    <p class="warning">
+      This link is protected. Anyone who opens it must also enter the passphrase. Tell them the
+      passphrase separately, for example in person or by phone, not in the same message.
+    </p>
+  {:else}
+    <p class="warning">
+      Anyone with this link can see and edit every list in this space. Send it only to people you
+      trust, through a private channel.
+    </p>
+  {/if}
 
   <div class="qr">
-    <QrCode text={link} label="QR code for the share link" />
+    <QrCode text={shownLink} label="QR code for the share link" />
   </div>
 
   <label class="visually-hidden" for="share-link">Share link</label>
@@ -55,7 +91,7 @@
       id="share-link"
       class="text-input"
       readonly
-      value={link}
+      value={shownLink}
       onfocus={(e) => e.currentTarget.select()}
     />
     <button class="btn btn-primary" onclick={copy}>{copied ? 'Copied' : 'Copy'}</button>
@@ -63,6 +99,32 @@
   {#if canShare}
     <button class="btn share-btn" onclick={shareNative}>
       <Icon name="share" /> Share via…
+    </button>
+  {/if}
+
+  {#if protecting}
+    <form class="protect" onsubmit={createProtected}>
+      <label for="share-passphrase">Passphrase (at least {MIN_PASSPHRASE_LENGTH} characters)</label>
+      <input
+        id="share-passphrase"
+        class="text-input"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
+        placeholder="e.g. three random words"
+        bind:value={passphrase}
+      />
+      <button class="btn btn-primary" disabled={!passphraseOk || creating}>
+        {creating ? 'Creating…' : 'Create protected link'}
+      </button>
+    </form>
+  {:else if protectedLink}
+    <button class="btn link-btn" onclick={() => (protectedLink = null)}>
+      Use the link without a passphrase
+    </button>
+  {:else}
+    <button class="btn link-btn" onclick={() => (protecting = true)}>
+      Protect with a passphrase…
     </button>
   {/if}
 
@@ -139,6 +201,24 @@
   .share-btn :global(svg) {
     width: 20px;
     height: 20px;
+  }
+
+  .protect {
+    display: grid;
+    gap: 0.5rem;
+    margin-top: 1rem;
+  }
+
+  .protect label {
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+
+  .link-btn {
+    width: 100%;
+    margin-top: 0.5rem;
+    background: transparent;
+    border-color: var(--border);
   }
 
   .note {
