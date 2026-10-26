@@ -2,6 +2,7 @@ import type { Plugin } from 'vite';
 import { defineConfig } from 'vitest/config';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { VitePWA } from 'vite-plugin-pwa';
+import { RELAY_URLS } from './src/sync/config.ts';
 
 /**
  * Content Security Policy for production builds.
@@ -10,8 +11,9 @@ import { VitePWA } from 'vite-plugin-pwa';
  * It is only injected into builds because the Vite dev server relies on inline
  * scripts and styles for hot reloading.
  *
- * `connect-src 'self'` means the prototype cannot talk to any other host. Phase 2
- * and 3 will extend it with the chosen signalling and relay endpoints (wss:).
+ * `connect-src` allows only the app itself and the signalling relays listed in
+ * src/sync/config.ts. WebRTC traffic to peers and STUN servers is not governed
+ * by CSP; see docs/THREAT_MODEL.md.
  */
 const CSP = [
   "default-src 'none'",
@@ -19,7 +21,7 @@ const CSP = [
   "style-src 'self'",
   "img-src 'self' data:",
   "font-src 'self'",
-  "connect-src 'self'",
+  `connect-src 'self' ${RELAY_URLS.join(' ')}`,
   "manifest-src 'self'",
   "worker-src 'self'",
   "base-uri 'none'",

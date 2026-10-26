@@ -1,7 +1,7 @@
 # Architecture
 
 Lists is a static single-page app. There is no backend: all logic runs in the browser,
-and data lives in IndexedDB. Sharing (phases 2–3) adds pluggable, end-to-end encrypted
+and data lives in IndexedDB. Shared spaces sync through pluggable, end-to-end encrypted
 transports. See [`PLAN.md`](../PLAN.md) for the roadmap and
 [`PROTOCOL.md`](PROTOCOL.md) for the wire format.
 
@@ -9,14 +9,20 @@ transports. See [`PLAN.md`](../PLAN.md) for the roadmap and
 
 ```
 src/ui/        Svelte components. Read plain snapshots, call Space methods.
+   │           app-state.svelte.ts owns the open space, its sync session and the
+   │           registry of spaces.
    │
 src/core/      Space: the Yjs document and every operation on it. Pure TypeScript,
    │           no DOM, fully unit tested.
    │
-src/storage/   IndexedDB persistence (y-indexeddb), current-space bookkeeping.
+src/storage/   IndexedDB persistence (y-indexeddb) and the registry of known spaces
+   │           and their secrets (localStorage).
    │
-src/crypto/    (phase 2) key derivation, sealing/opening messages, link format.
-src/sync/      (phases 2–3) transports: WebRTC, Nostr.
+src/sync/      SyncSession: keeps a Y.Doc in sync over any number of transports.
+   │           Transports: WebRTC (Trystero over Nostr) and BroadcastChannel (tabs).
+   │           config.ts lists every network endpoint; the CSP is built from it.
+   │
+src/crypto/    Key derivation (HKDF), sealed messages (AES-GCM), share links.
 ```
 
 Rules:
@@ -34,7 +40,7 @@ Rules:
 One space is one `Y.Doc`:
 
 ```
-meta:  Y.Map  { schema: 1 }
+meta:  Y.Map  { schema: 1, name?: string }   (name is the space's shared display name)
 lists: Y.Map<listId, Y.Map>
          name: string            (max 200 characters)
          createdAt: number       (ms since epoch)
@@ -61,6 +67,22 @@ Design notes:
   upgraded to `Y.Text` later.
 - **Checked items keep their position.** The UI shows them in a separate "Completed"
   section, and unchecking returns an item to where it was.
+
+## Spaces and sharing
+
+A device can hold several spaces. `SpaceRegistry` (`src/storage/spaces.ts`) records
+each space's id, its secret if it has been shared, and a cached name for the switcher.
+
+- **Sharing** a space generates its 32-byte secret once, starts a `SyncSession` and
+  shows the link (`#v=1&s=<id>&k=<secret>`) with a QR code. All lists in the space are
+  shared; the dialog says so. Use a separate space for lists that should stay private.
+- **Opening a link** registers the space, removes the fragment from the address bar and
+  opens the space. It starts empty and fills as soon as a peer who has it is online.
+- **Leaving** a space deletes the local copy and the secret from this device only.
+
+Every shared space runs one `SyncSession` with two transports: BroadcastChannel for
+other tabs on the same device, and WebRTC for other devices. Spaces that were never
+shared have no session and open no connections.
 
 ## Navigation
 

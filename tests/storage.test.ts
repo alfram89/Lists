@@ -1,9 +1,12 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
-import { currentSpaceId, openSpace } from '../src/storage/local';
+import { generateSecret } from '../src/crypto/keys';
+import { toBase64Url } from '../src/crypto/encoding';
+import { deleteSpaceData, openSpace } from '../src/storage/local';
+import { SpaceRegistry } from '../src/storage/spaces';
 
 class MemoryStorage implements Storage {
-  private data = new Map<string, string>();
+  data = new Map<string, string>();
   get length() {
     return this.data.size;
   }
@@ -24,27 +27,101 @@ class MemoryStorage implements Storage {
   }
 }
 
-describe('local storage', () => {
+describe('IndexedDB persistence', () => {
   it('persists a space across reopen', async () => {
     const first = await openSpace('test-space');
     const list = first.space.createList('Groceries');
     first.space.addItem(list, 'Milk');
+    first.space.setName('Home');
     await first.close();
 
     const second = await openSpace('test-space');
+    expect(second.space.getName()).toBe('Home');
     expect(second.space.getLists().map((l) => l.name)).toEqual(['Groceries']);
     expect(second.space.getList(list)!.items.map((i) => i.text)).toEqual(['Milk']);
     await second.close();
   });
 
-  it('remembers the current space id', () => {
+  it('deletes a space', async () => {
+    const first = await openSpace('to-delete');
+    first.space.createList('Gone');
+    await first.close();
+    await deleteSpaceData('to-delete');
+    const again = await openSpace('to-delete');
+    expect(again.space.getLists()).toEqual([]);
+    await again.close();
+  });
+});
+
+describe('space registry', () => {
+  it('creates a local space on first run and remembers it', () => {
     const storage = new MemoryStorage();
-    const id = currentSpaceId(storage);
+    const id = new SpaceRegistry(storage).currentId;
     expect(id).toMatch(/^[A-Za-z0-9_-]{22}$/);
-    expect(currentSpaceId(storage)).toBe(id);
+    const reloaded = new SpaceRegistry(storage);
+    expect(reloaded.currentId).toBe(id);
+    expect(reloaded.get(id)!.secret).toBeNull();
   });
 
-  it('still returns an id when storage throws', () => {
+  it('adopts the space id stored by phase 1', () => {
+    const storage = new MemoryStorage();
+    storage.setItem('lists:currentSpace', 'BBBBBBBBBBBBBBBBBBBBBB');
+    const registry = new SpaceRegistry(storage);
+    expect(registry.currentId).toBe('BBBBBBBBBBBBBBBBBBBBBB');
+    expect(registry.list()).toHaveLength(1);
+  });
+
+  it('turns a local space into a shared one exactly once', () => {
+    const registry = new SpaceRegistry(new MemoryStorage());
+    const id = registry.currentId;
+    const secret = registry.ensureSecret(id, generateSecret);
+    expect(secret).toHaveLength(32);
+    expect(registry.ensureSecret(id, generateSecret)).toEqual(secret);
+    expect(registry.secretOf(id)).toEqual(secret);
+  });
+
+  it('adds shared spaces from links and refuses conflicting secrets', () => {
+    const storage = new MemoryStorage();
+    const registry = new SpaceRegistry(storage);
+    const id = 'CCCCCCCCCCCCCCCCCCCCCC';
+    const secret = generateSecret();
+    expect(registry.addShared(id, secret)).toBe(true);
+    expect(registry.addShared(id, secret)).toBe(true);
+    expect(registry.addShared(id, generateSecret())).toBe(false);
+    expect(new SpaceRegistry(storage).secretOf(id)).toEqual(secret);
+  });
+
+  it('removes spaces and falls back to another one', () => {
+    const registry = new SpaceRegistry(new MemoryStorage());
+    const first = registry.currentId;
+    const second = registry.addLocal();
+    registry.setCurrent(second);
+    registry.remove(second);
+    expect(registry.currentId).toBe(first);
+  });
+
+  it('drops corrupted or tampered entries', () => {
+    const storage = new MemoryStorage();
+    const good = {
+      id: 'DDDDDDDDDDDDDDDDDDDDDD',
+      secret: toBase64Url(generateSecret()),
+      addedAt: 1,
+    };
+    storage.setItem(
+      'lists:spaces',
+      JSON.stringify([
+        good,
+        { id: 'bad' },
+        { ...good, id: 'EEEEEEEEEEEEEEEEEEEEEE', secret: 'xx' },
+        7,
+      ]),
+    );
+    expect(new SpaceRegistry(storage).list()).toEqual([good]);
+    storage.setItem('lists:spaces', '{not json');
+    expect(new SpaceRegistry(storage).list()).toEqual([]);
+  });
+
+  it('keeps working when storage throws', () => {
     const broken = new MemoryStorage();
     broken.getItem = () => {
       throw new Error('blocked');
@@ -52,6 +129,6 @@ describe('local storage', () => {
     broken.setItem = () => {
       throw new Error('blocked');
     };
-    expect(currentSpaceId(broken)).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(new SpaceRegistry(broken).currentId).toMatch(/^[A-Za-z0-9_-]{22}$/);
   });
 });

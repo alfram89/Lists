@@ -9,13 +9,16 @@
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
     "isolatedModules": true,
-    "allowJs": false
+    "allowJs": false,
+    "allowImportingTsExtensions": true
   },
   "include": [
     "src/**/*.ts",
     "src/**/*.svelte",
     "tests/**/*.ts",
     "vite.config.ts",
-    "svelte.config.js"
+    "svelte.config.js",
+    "e2e/**/*.ts",
+    "playwright.config.ts"
   ]
 }

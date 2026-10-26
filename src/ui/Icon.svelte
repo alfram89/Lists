@@ -10,6 +10,9 @@
     plus: 'M12 5v14M5 12h14',
     chevron: 'M9 6l6 6-6 6',
     check: 'M5 12.5l4.5 4.5L19 7.5',
+    share: 'M4 13v6a1 1 0 001 1h14a1 1 0 001-1v-6M12 3v12M7 8l5-5 5 5',
+    close: 'M6 6l12 12M18 6L6 18',
+    caret: 'M7 10l5 5 5-5',
   } as const;
 
   export type IconName = keyof typeof paths;
