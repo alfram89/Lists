@@ -220,6 +220,11 @@ weakens that protection, so it needs a deliberate decision.
 
 - [ ] Read-only links, passphrases, key rotation
 - [ ] Relay selection (see the CSP trade-off under phase 3)
+- [ ] _To be decided:_ an expiration (e.g. 90 days, NIP-40) on mailbox snapshots too.
+      Snapshots are refreshed whenever the space is used, so active spaces are
+      unaffected, while encrypted copies of abandoned spaces disappear from relays by
+      themselves. Trade-off: a new device cannot fetch a space nobody has opened for
+      longer than that until someone with a copy opens the app again.
 - [x] Padding of encrypted messages (done in phase 2)
 - [ ] JSON export/import
 - [ ] External security review, or peer review of the crypto

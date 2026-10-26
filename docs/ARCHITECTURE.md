@@ -79,7 +79,8 @@ each space's id, its secret if it has been shared, and a cached name for the swi
   shows the link (`#v=1&s=<id>&k=<secret>`) with a QR code. All lists in the space are
   shared; the dialog says so. Use a separate space for lists that should stay private.
 - **Opening a link** registers the space, removes the fragment from the address bar and
-  opens the space. It starts empty and fills as soon as a peer who has it is online.
+  opens the space. It fills from the relay mailbox within seconds, or from a peer
+  directly if one is online.
 - **Leaving** a space deletes the local copy and the secret from this device only.
 
 Every shared space runs one `SyncSession` with two transports (BroadcastChannel for
