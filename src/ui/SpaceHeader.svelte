@@ -17,9 +17,23 @@
   const status = $derived.by(() => {
     if (!app.sync) return 'Only on this device';
     const { devices } = app.sync;
-    if (devices === 0) return 'Shared · no one else online right now';
-    return `Shared · connected to ${devices} other ${devices === 1 ? 'device' : 'devices'}`;
+    const relay = app.relay;
+    const others =
+      devices > 0 ? ` · ${devices} other ${devices === 1 ? 'device' : 'devices'} online` : '';
+    if (relay && !relay.ready) return `Shared · syncing…${others}`;
+    if (relay && relay.relays === 0 && devices === 0) {
+      return relay.pending
+        ? 'Shared · offline, changes will be sent later'
+        : 'Shared · offline, will sync when back online';
+    }
+    if (relay?.pending) return `Shared · saving…${others}`;
+    return `Shared · up to date${others}`;
   });
+
+  const connected = $derived((app.sync?.devices ?? 0) > 0 || (app.relay?.relays ?? 0) > 0);
+  const relayDetails = $derived(
+    app.relay ? `${app.relay.relays} of ${app.relay.totalRelays} relays connected` : undefined,
+  );
 
   async function share() {
     menuOpen = false;
@@ -124,7 +138,7 @@
       <Icon name="share" />
     </button>
   </div>
-  <p class="status" class:live={(app.sync?.devices ?? 0) > 0} role="status">{status}</p>
+  <p class="status" class:live={connected} role="status" title={relayDetails}>{status}</p>
 </header>
 
 {#if shareLink}

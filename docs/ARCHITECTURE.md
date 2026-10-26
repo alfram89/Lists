@@ -20,6 +20,8 @@ src/storage/   IndexedDB persistence (y-indexeddb) and the registry of known spa
    │
 src/sync/      SyncSession: keeps a Y.Doc in sync over any number of transports.
    │           Transports: WebRTC (Trystero over Nostr) and BroadcastChannel (tabs).
+   │           RelayMailbox: encrypted store-and-forward through Nostr relays.
+   │           nostr/: minimal Nostr client (events, signing, relay connections).
    │           config.ts lists every network endpoint; the CSP is built from it.
    │
 src/crypto/    Key derivation (HKDF), sealed messages (AES-GCM), share links.
@@ -77,12 +79,16 @@ each space's id, its secret if it has been shared, and a cached name for the swi
   shows the link (`#v=1&s=<id>&k=<secret>`) with a QR code. All lists in the space are
   shared; the dialog says so. Use a separate space for lists that should stay private.
 - **Opening a link** registers the space, removes the fragment from the address bar and
-  opens the space. It starts empty and fills as soon as a peer who has it is online.
+  opens the space. It fills from the relay mailbox within seconds, or from a peer
+  directly if one is online.
 - **Leaving** a space deletes the local copy and the secret from this device only.
 
-Every shared space runs one `SyncSession` with two transports: BroadcastChannel for
-other tabs on the same device, and WebRTC for other devices. Spaces that were never
-shared have no session and open no connections.
+Every shared space runs one `SyncSession` with two transports (BroadcastChannel for
+other tabs on the same device, WebRTC for other devices) and one `RelayMailbox`, which
+stores and fetches encrypted changes on Nostr relays for people who are not online at
+the same time. All three are idempotent Yjs merges, so it does not matter which path a
+change arrives by first, or whether it arrives twice. Spaces that were never shared
+have neither and open no connections.
 
 ## Navigation
 

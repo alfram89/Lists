@@ -1,10 +1,10 @@
 # Threat model
 
 This document says what Lists protects, against whom, and what it does not protect.
-It covers the full design. Items marked _(phase N)_ are not built yet. As of phase 2,
+It covers the full design. Items marked _(phase N)_ are not built yet. As of phase 3,
 a space that has never been shared stays on the device and makes no network requests
-at all. A shared space syncs peer to peer over WebRTC, with public Nostr relays used
-only for signalling.
+at all. A shared space syncs peer to peer over WebRTC, and public Nostr relays carry
+WebRTC signalling and store encrypted changes for people who are offline.
 
 ## Assets
 
@@ -37,15 +37,21 @@ only for signalling.
   fragment is never sent to the host serving the app, and the app removes it from the
   address bar after reading it.
 - Signalling relays see only a topic derived one-way from the room id, plus WebRTC
-  offers that Trystero encrypts with a password derived from the secret. No list data
-  passes through them.
+  offers that Trystero encrypts with a password derived from the secret.
+- Relays acting as a mailbox store sealed messages: AES-256-GCM ciphertext under a
+  pseudonymous author key derived from the secret. They cannot read list content,
+  names or check state.
 - Transports receive only the public room id and the signalling password, never the
   encryption key.
 
 ### Integrity
 
 - AES-GCM authenticates every message, so a relay cannot change or forge one without
-  the key.
+  the key. Mailbox events that fail to decrypt are ignored, even when they claim the
+  room's author key, so a malicious relay can withhold data but not inject it.
+- The Nostr signing key only proves "has the link" to relays. Anyone with the link can
+  sign, so it adds no integrity beyond the encryption; it lets honest relays reject
+  outsiders who try to overwrite the room's snapshot.
 - Associated data binds each message to its room, so messages cannot be replayed
   across rooms.
 - Read-only links add per-update signatures, so readers cannot write _(phase 4)_.
@@ -63,16 +69,23 @@ only for signalling.
   IP addresses of peers and when they are online. WebRTC reveals the IP addresses of
   peers to each other, which is expected between people who share a list. Users who
   need to hide this can use a VPN or Tor, or run their own relay.
+- **Not protected:** mailbox relays see, per room, when changes are made, roughly how
+  large they are (padded size buckets) and which IP addresses fetch or publish them.
+  They can tell that several IP addresses share one room, but not who the people are
+  or what the lists contain.
 
 ### Availability
 
 - Data is always kept locally in IndexedDB, so the app works without any network.
-- **Phase 2 limitation:** changes sync only while two people have the app open at the
-  same time, and only if their networks allow a direct WebRTC connection (there is no
-  TURN server). The Nostr mailbox in phase 3 removes both limitations.
-- Several relays are used at once, so losing one is not fatal _(phase 3)_.
-- **Not guaranteed:** public relays may delete data at any time. Snapshots and JSON
-  export mitigate this _(phases 3–4)_.
+- Changes reach people who are offline through the relay mailbox, and peers whose
+  networks block direct WebRTC connections still sync through it.
+- Five relays are used at once, so losing some is not fatal.
+- **Not guaranteed:** public relays may delete data at any time, rate-limit, or go
+  away. Every device keeps a full local copy, uploads whatever the relays lack the next
+  time it opens the app, and snapshots are refreshed daily while the space is in use.
+  JSON export _(phase 4)_ adds a manual backup.
+- A malicious relay can withhold or delay events; other relays and direct peer
+  connections compensate.
 - Browsers can evict site data. The app asks for persistent storage
   (`navigator.storage.persist()`) after the first list is created.
 
@@ -93,7 +106,7 @@ reason the project keeps its dependency footprint small.
 Mitigations:
 
 - **Strict CSP** (`default-src 'none'`, `script-src 'self'`). `connect-src` allows only
-  the app itself and the signalling relays in `src/sync/config.ts`; the policy is
+  the app itself and the relays in `src/sync/config.ts`; the policy is
   generated from that file, so the code and the policy cannot drift apart. CSP does
   not govern WebRTC, so peer and STUN connections are limited by the code instead.
 - Few runtime dependencies: `yjs`, `y-indexeddb`, `fractional-indexing`, `trystero`
@@ -118,4 +131,6 @@ Limitations:
 - Access cannot be revoked for a single person. Rotation moves the space to a new key
   that everyone else must receive again.
 - There is no forward secrecy: someone who later obtains the key can decrypt old
-  messages still stored on relays. Short relay expiration limits how much is exposed.
+  messages still stored on relays. Updates expire after 14 days, but the latest
+  snapshot, which holds the whole space, stays until a relay drops it. Leaving a space
+  does not delete it from relays.

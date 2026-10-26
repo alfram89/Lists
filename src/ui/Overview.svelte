@@ -48,11 +48,13 @@
 
 {#if lists.length === 0}
   <div class="empty">
-    {#if app.sync}
+    {#if app.relay && !app.relay.ready}
+      <p>Fetching shared lists…</p>
+    {:else if app.sync}
       <p>No lists here yet.</p>
       <p class="muted">
-        If you just opened a share link, the lists appear as soon as someone who has them opens the
-        app. Keep this page open.
+        If you opened a share link and expected lists here, they may not have reached the relays
+        yet. Ask the person who shared it to open the app once.
       </p>
     {:else}
       <p>No lists yet.</p>

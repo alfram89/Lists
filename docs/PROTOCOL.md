@@ -1,8 +1,8 @@
 # Protocol specification
 
 Status: **version 1, draft.** The share link, key derivation, message format, sync
-protocol and the WebRTC and BroadcastChannel transports are implemented (phase 2). The
-Nostr mailbox (phase 3) and access levels (phase 4) are still design only. Formats may
+protocol, the WebRTC and BroadcastChannel transports (phase 2) and the Nostr mailbox
+(phase 3) are implemented. Access levels (phase 4) are still design only. Formats may
 change until version 1 is frozen; every format carries a version number so it can
 evolve later without breaking old links.
 
@@ -51,19 +51,25 @@ All keys are derived from the space secret with HKDF-SHA-256 (WebCrypto). Each o
 a distinct `info` label, so a key used for one purpose can never be confused with
 another:
 
-| Key              | HKDF info         | Use                                                                |
-| ---------------- | ----------------- | ------------------------------------------------------------------ |
-| `encKey`         | `lists/v1/enc`    | AES-256-GCM key for every message (non-extractable `CryptoKey`)    |
-| `roomId`         | `lists/v1/room`   | 32 bytes, hex. Topic name used with relays and signalling          |
-| `signalPassword` | `lists/v1/signal` | 32 bytes, base64url. Trystero encrypts WebRTC offers with it       |
-| `nostrKey`       | `lists/v1/nostr`  | _(phase 3)_ secp256k1 private key for signing Nostr mailbox events |
+| Key              | HKDF info         | Use                                                             |
+| ---------------- | ----------------- | --------------------------------------------------------------- |
+| `encKey`         | `lists/v1/enc`    | AES-256-GCM key for every message (non-extractable `CryptoKey`) |
+| `roomId`         | `lists/v1/room`   | 32 bytes, hex. Topic name used with relays and signalling       |
+| `signalPassword` | `lists/v1/signal` | 32 bytes, base64url. Trystero encrypts WebRTC offers with it    |
+| `nostrKey`       | `lists/v1/nostr`  | secp256k1 secret key for signing Nostr mailbox events (BIP-340) |
 
 The salt is the empty string. That is acceptable because the input is a uniformly
 random 256-bit secret.
 
+If the `nostrKey` output is not a valid secp256k1 secret key (zero or not below the
+group order, probability about 2^-128), it is derived again with the info
+`lists/v1/nostr/1`, then `/2`, and so on. The matching x-only public key,
+`nostrPubkey`, identifies the room on the relays.
+
 Test vector (`tests/crypto.test.ts`): for a secret of 32 bytes all equal to `0x07`,
 `roomId` is `edea8322d48af8f19b5d388a34c584ebf8574c53e5e8a9c905d7adb22b895828` and
-`signalPassword` is `7JOt4KZioVaA2KtKdUgyIzHA0RQMeZ6y1F4M6N7RxsA`.
+`signalPassword` is `7JOt4KZioVaA2KtKdUgyIzHA0RQMeZ6y1F4M6N7RxsA` and `nostrPubkey` is
+`2e96ae1764d9be7306cd7bc056626d378e89e6fda1223842cbf3d39109466fe7`.
 
 `roomId` is a one-way function of the secret. A relay that sees the room id cannot use
 it to derive `encKey` or to find the link.
@@ -159,22 +165,70 @@ answer with `welcome`, leave with `bye`, and exchange `data` messages that carry
 messages, optionally addressed to one tab. The channel is same-origin only; messages
 are still sealed so every transport is handled the same way.
 
-### Nostr relays (phase 3)
+### Nostr mailbox (phase 3, implemented)
 
-- **Updates:** regular events (kind in the 1000–9999 range, exact number to be decided)
-  tagged `["t", roomId]`, whose `content` is the base64 sealed message. They carry an
-  `expiration` tag (NIP-40) of about 30 days.
-- **Snapshots:** an addressable event (kind in the 30000–39999 range) with
-  `["d", roomId]`. Peers replace it with a fresh snapshot about once a day, or after
-  roughly 100 updates. Because Yjs merges are idempotent, two peers writing snapshots at
-  the same time cannot lose data: the updates that went into either snapshot are still
-  on the relays until they expire.
-- **Sync on open:** fetch the snapshot, then updates since the snapshot's `created_at`
-  minus a safety margin, merge everything, then subscribe for new events.
-- All events are signed with `nostrKey`, which is shared by everyone who has the link.
-  Relays see only one pseudonymous key per room and cannot connect it to people.
-- Default relay set: 3–5 well-known public relays, user-configurable. A message counts
-  as delivered once at least two relays accept it.
+`src/sync/mailbox.ts` uses the same public relays as an encrypted mailbox, so changes
+reach people who are not online at the same time. It runs alongside the peer-to-peer
+transports for every shared space; it is not a `Transport`, because relays store
+messages rather than connect peers.
+
+**Events.** Every event is NIP-78 application data (kind `30078`), signed by
+`nostrPubkey` with `nostrKey`, with the base64 (standard alphabet) sealed message as
+`content`. The author key alone identifies the room, so events carry no room tag.
+Two kinds, told apart by the `d` tag:
+
+| `d` tag      | Sealed type     | Contents                | Lifetime                                |
+| ------------ | --------------- | ----------------------- | --------------------------------------- |
+| `snapshot`   | `StateResponse` | The complete space      | Addressable: each one replaces the last |
+| `u:<random>` | `Update`        | Changes the relays lack | NIP-40 `expiration` after 14 days       |
+
+**Fetching.** On every (re)connection to a relay:
+
+1. `REQ` `{kinds: [30078], authors: [nostrPubkey], "#d": ["snapshot"], limit: 1}`.
+2. After its `EOSE`, `REQ` `{kinds: [30078], authors: [nostrPubkey], since}` where
+   `since` is the snapshot's `created_at` minus 10 minutes (clock skew), or 14 days ago
+   if there is no snapshot. This subscription stays open for live updates.
+
+Every event is decrypted with `encKey` and applied to the document. Events that fail to
+decrypt are ignored, so neither a relay nor anyone without the link can inject data,
+even under the room's author key. The mailbox counts as ready once one relay has sent
+everything (plus a short grace period for the others), or after 8 seconds.
+
+**Shadow document.** The mailbox keeps a second Y.Doc with everything known to be on
+the relays: everything fetched, plus everything a relay accepted from this device.
+
+**Sending.** Local changes are batched for 400 ms. The update sent is the difference
+between the local document and the shadow (`Y.encodeStateAsUpdate(doc,
+stateVector(shadow))`), not just the newest edits. Yjs cannot apply a change before
+every earlier change from the same client, so this keeps edits made before the space
+was shared, or while offline, from being stranded. An update is published to every
+connected relay; it counts as delivered once any relay answers `OK true`. Otherwise
+it is retried when a relay reconnects, or after 30 seconds. When the page is hidden,
+pending changes are sent at once, because mobile browsers suspend hidden pages.
+
+Changes that arrived from a peer over WebRTC are forwarded only after 5 seconds, and
+nothing is sent if the relays already hold everything (the local document equals the
+shadow). The peer normally publishes its own changes, so this avoids duplicates while
+still covering a peer that cannot reach any relay.
+
+**Snapshots.** After the first fetch, and after 20 seconds without local edits, a peer
+publishes a new snapshot (with a few seconds of random delay, so peers rarely do it at
+once) if any of these hold:
+
+- there is no snapshot yet,
+- the snapshot is more than 24 hours old,
+- there are updates at or after the snapshot's `created_at`,
+- the local document has anything the shadow lacks (`Y.equalSnapshots` differs).
+
+Snapshots and updates are both plain Yjs updates, so several peers publishing
+snapshots at the same time cannot lose data: each contains everything its author had,
+and updates stay on the relays for 14 days while active peers keep snapshots fresh.
+Changes that never reached a relay are still in the author's local copy and are
+uploaded the next time they open the app.
+
+**Size limit.** Events whose content would exceed 100,000 characters are not sent to
+relays (most relays reject events above about 128 KB); they still sync peer to peer.
+Shopping lists are far below this.
 
 ## Access levels (phase 4)
 
@@ -191,9 +245,10 @@ are still sealed so every transport is handled the same way.
 
 - Which public relays work best for Trystero signalling in practice. The current list
   is a starting point and will become user-configurable in phase 3.
-- Exact Nostr kinds, and whether to use NIP-59 gift wrapping to hide the room tag.
-- How long relays actually keep events in practice, and how that should drive snapshot
-  frequency.
+- How long public relays actually keep events in practice, and whether 14 days of
+  updates plus a daily snapshot is the right balance.
+- User-chosen relays. The CSP currently allows only the built-in list; allowing
+  arbitrary relays means allowing any `wss:` host.
 - Whether presence (who is viewing) is worth the extra metadata it leaks.
 - Whether to replace plain strings with `Y.Text` for item text, so concurrent edits of
   the same item merge character by character instead of last-writer-wins.
