@@ -18,6 +18,8 @@ export interface SpaceRecord {
   addedAt: number;
   /** Cached display name, so the space switcher need not open every space. */
   name?: string;
+  /** Someone reset the share link: this secret is retired and no longer syncs. */
+  moved?: boolean;
 }
 
 const SPACES_KEY = 'lists:spaces';
@@ -32,11 +34,16 @@ function isRecord(value: unknown): value is SpaceRecord {
     SPACE_ID.test(r.id) &&
     typeof r.addedAt === 'number' &&
     (r.name === undefined || (typeof r.name === 'string' && r.name.length <= 200)) &&
+    (r.moved === undefined || typeof r.moved === 'boolean') &&
     (r.secret === null ||
       (typeof r.secret === 'string' && fromBase64Url(r.secret)?.length === SECRET_BYTES))
   );
 }
 
+/**
+ * Every method re-reads localStorage first, because several tabs share it: a
+ * tab must never overwrite a newer secret another tab just stored.
+ */
 export class SpaceRegistry {
   private records: SpaceRecord[] = [];
   private current: string | null = null;
@@ -52,10 +59,12 @@ export class SpaceRegistry {
   }
 
   list(): SpaceRecord[] {
+    this.refresh();
     return [...this.records];
   }
 
   get(id: string): SpaceRecord | undefined {
+    this.refresh();
     return this.records.find((r) => r.id === id);
   }
 
@@ -73,6 +82,7 @@ export class SpaceRegistry {
   }
 
   addLocal(): string {
+    this.refresh();
     const id = randomId();
     this.records.push({ id, secret: null, addedAt: Date.now() });
     this.save();
@@ -81,6 +91,7 @@ export class SpaceRegistry {
 
   /** Adds a shared space from a link. Returns false if the id is known with a different secret. */
   addShared(id: string, secret: Uint8Array): boolean {
+    this.refresh();
     const encoded = toBase64Url(secret);
     const existing = this.get(id);
     if (existing) return existing.secret === encoded;
@@ -91,6 +102,7 @@ export class SpaceRegistry {
 
   /** Turns a local space into a shared one. Returns the (new or existing) secret. */
   ensureSecret(id: string, generate: () => Uint8Array): Uint8Array<ArrayBuffer> {
+    this.refresh();
     const record = this.get(id);
     if (!record) throw new Error(`Unknown space ${id}`);
     const existing = record.secret ? fromBase64Url(record.secret) : null;
@@ -101,7 +113,33 @@ export class SpaceRegistry {
     return secret;
   }
 
+  /**
+   * Gives a space a new secret, after its link was reset here or the user
+   * accepted a new link for it. Clears the "moved" state.
+   */
+  replaceSecret(id: string, secret: Uint8Array): void {
+    this.refresh();
+    const record = this.get(id);
+    if (!record) throw new Error(`Unknown space ${id}`);
+    record.secret = toBase64Url(secret);
+    delete record.moved;
+    this.save();
+  }
+
+  /**
+   * Marks a space as moved, but only if it still has the secret the "moved"
+   * message was for: another tab may already have stored the new one.
+   */
+  setMoved(id: string, secret: Uint8Array): void {
+    this.refresh();
+    const record = this.get(id);
+    if (!record || record.moved || record.secret !== toBase64Url(secret)) return;
+    record.moved = true;
+    this.save();
+  }
+
   setName(id: string, name: string): void {
+    this.refresh();
     const record = this.get(id);
     if (!record || record.name === name) return;
     record.name = name;
@@ -114,9 +152,15 @@ export class SpaceRegistry {
   }
 
   remove(id: string): void {
+    this.refresh();
     this.records = this.records.filter((r) => r.id !== id);
     this.save();
     if (this.current === id) this.current = null;
+  }
+
+  /** Reloads from storage; keeps the in-memory copy if storage is unavailable. */
+  private refresh() {
+    if (this.read(SPACES_KEY) !== null) this.records = this.load();
   }
 
   private load(): SpaceRecord[] {

@@ -121,6 +121,39 @@ describe('space registry', () => {
     expect(new SpaceRegistry(storage).list()).toEqual([]);
   });
 
+  it('replaces secrets and tracks moved spaces', () => {
+    const registry = new SpaceRegistry(new MemoryStorage());
+    const id = 'FFFFFFFFFFFFFFFFFFFFFF';
+    const oldSecret = generateSecret();
+    registry.addShared(id, oldSecret);
+    registry.setMoved(id, oldSecret);
+    expect(registry.get(id)!.moved).toBe(true);
+
+    const newSecret = generateSecret();
+    registry.replaceSecret(id, newSecret);
+    expect(registry.get(id)!.moved).toBeUndefined();
+    expect(registry.secretOf(id)).toEqual(newSecret);
+
+    // A late "moved" notice for the old key must not affect the new one.
+    registry.setMoved(id, oldSecret);
+    expect(registry.get(id)!.moved).toBeUndefined();
+  });
+
+  it('never lets one tab overwrite what another tab stored', () => {
+    const storage = new MemoryStorage();
+    const tabA = new SpaceRegistry(storage);
+    const tabB = new SpaceRegistry(storage);
+    const id = tabA.currentId;
+    const secret = tabA.ensureSecret(id, generateSecret);
+
+    // Tab B started before the secret existed, then changes something else.
+    tabB.setName(id, 'Renamed in tab B');
+    const reloaded = new SpaceRegistry(storage);
+    expect(reloaded.secretOf(id)).toEqual(secret);
+    expect(reloaded.get(id)!.name).toBe('Renamed in tab B');
+    expect(tabB.secretOf(id)).toEqual(secret);
+  });
+
   it('keeps working when storage throws', () => {
     const broken = new MemoryStorage();
     broken.getItem = () => {

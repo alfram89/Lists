@@ -27,6 +27,7 @@ export class SyncSession {
   private readonly transports: Transport[] = [];
   private readonly peers: Set<string>[];
   private readonly listeners = new Set<(status: SyncStatus) => void>();
+  private readonly movedListeners = new Set<() => void>();
   private closed = false;
   /** Number of messages dropped because they failed to open or apply. */
   dropped = 0;
@@ -72,12 +73,24 @@ export class SyncSession {
     return () => this.listeners.delete(listener);
   }
 
+  /** Called when a peer announces that the space moved to a new key. */
+  onMoved(listener: () => void): () => void {
+    this.movedListeners.add(listener);
+    return () => this.movedListeners.delete(listener);
+  }
+
+  /** Tells every connected peer that this key is retired. */
+  async announceMoved(): Promise<void> {
+    await this.sendTo(undefined, undefined, MessageType.Moved, new Uint8Array(0));
+  }
+
   destroy(): void {
     if (this.closed) return;
     this.closed = true;
     this.doc.off('update', this.onDocUpdate);
     for (const transport of this.transports) transport.close();
     this.listeners.clear();
+    this.movedListeners.clear();
   }
 
   private readonly onDocUpdate = (update: Uint8Array, origin: unknown) => {
@@ -115,6 +128,9 @@ export class SyncSession {
         case MessageType.Update:
         case MessageType.StateResponse:
           Y.applyUpdate(this.doc, message.payload, this);
+          break;
+        case MessageType.Moved:
+          for (const listener of this.movedListeners) listener();
           break;
       }
     } catch {

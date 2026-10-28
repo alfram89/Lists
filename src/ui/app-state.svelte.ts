@@ -1,6 +1,13 @@
+import { exportSpace, importInto, parseExport, type ExportFile } from '../core/export';
 import type { Space } from '../core/space';
 import { deriveKeys, generateSecret } from '../crypto/keys';
-import { buildShareLink, parseShareFragment } from '../crypto/link';
+import {
+  buildProtectedLink,
+  buildShareLink,
+  parseLink,
+  type ProtectedShareInfo,
+} from '../crypto/link';
+import { unwrapSecret, wrapSecret } from '../crypto/passphrase';
 import { deleteSpaceData, openSpace, type OpenSpace } from '../storage/local';
 import { SpaceRegistry } from '../storage/spaces';
 import { RELAY_URLS } from '../sync/config';
@@ -15,6 +22,16 @@ export interface SpaceSummary {
   name: string;
   shared: boolean;
 }
+
+/** A link for a space this device already has, but with a different key. */
+export interface PendingRekey {
+  spaceId: string;
+  secret: Uint8Array<ArrayBuffer>;
+  name: string;
+}
+
+/** How long resetting a link waits for relays to accept the "moved" marker. */
+const MOVED_PUBLISH_TIMEOUT_MS = 5000;
 
 const DEFAULT_LOCAL_NAME = 'My lists';
 const DEFAULT_SHARED_NAME = 'Shared lists';
@@ -36,6 +53,12 @@ export class AppState {
   spaces = $state<SpaceSummary[]>([]);
   error = $state<string | null>(null);
   notice = $state<string | null>(null);
+  /** The current space's link was reset elsewhere; it no longer syncs. */
+  moved = $state(false);
+  /** A passphrase-protected link waiting for its passphrase. */
+  pendingUnlock = $state.raw<ProtectedShareInfo | null>(null);
+  /** A link with a new key for a known space, waiting for the user to accept it. */
+  pendingRekey = $state.raw<PendingRekey | null>(null);
 
   private session: SyncSession | null = null;
   private mailbox: RelayMailbox | null = null;
@@ -82,6 +105,7 @@ export class AppState {
       this.registry.setCurrent(id);
       this.opened = opened;
       this.spaceId = id;
+      this.moved = this.registry.get(id)?.moved === true;
       this.cleanups.push(
         opened.space.onChange(() => {
           this.version++;
@@ -109,7 +133,81 @@ export class AppState {
     const secret = this.registry.ensureSecret(id, generateSecret);
     if (!this.session) await this.startSync();
     this.refreshSpaces();
-    return buildShareLink(location.origin + location.pathname, { spaceId: id, secret });
+    return buildShareLink(this.appUrl(), { spaceId: id, secret });
+  }
+
+  /** Like shareLink(), but the key in the link is wrapped with a passphrase. */
+  async protectedShareLink(passphrase: string): Promise<string> {
+    await this.shareLink();
+    const id = this.spaceId!;
+    const secret = this.registry.secretOf(id)!;
+    const wrapped = await wrapSecret(secret, passphrase, id);
+    return buildProtectedLink(this.appUrl(), { spaceId: id, ...wrapped });
+  }
+
+  /**
+   * Gives the current space a new key and returns the new link. Peers still on
+   * the old key are told the space moved; whoever should keep access needs the
+   * new link. The old encrypted snapshot on the relays is replaced by the marker.
+   */
+  async resetShareLink(): Promise<string> {
+    const id = this.spaceId;
+    if (!id || !this.isShared) throw new Error('Space is not shared');
+    const session = this.session;
+    const mailbox = this.mailbox;
+    await Promise.race([
+      Promise.all([session?.announceMoved(), mailbox?.publishMoved()]),
+      new Promise((resolve) => setTimeout(resolve, MOVED_PUBLISH_TIMEOUT_MS)),
+    ]);
+    this.stopSync();
+    this.registry.replaceSecret(id, generateSecret());
+    this.moved = false;
+    await this.startSync();
+    return this.shareLink();
+  }
+
+  /** Tries a passphrase for the pending protected link. False if it is wrong. */
+  async unlock(passphrase: string): Promise<boolean> {
+    const pending = this.pendingUnlock;
+    if (!pending) return false;
+    const secret = await unwrapSecret(pending, passphrase, pending.spaceId);
+    if (!secret) return false;
+    this.pendingUnlock = null;
+    const id = this.acceptLink(pending.spaceId, secret);
+    if (id) await this.switchTo(id);
+    return true;
+  }
+
+  cancelUnlock(): void {
+    this.pendingUnlock = null;
+  }
+
+  /** Accepts a new key for a space this device already has (after a link reset). */
+  async confirmRekey(): Promise<void> {
+    const pending = this.pendingRekey;
+    if (!pending) return;
+    this.pendingRekey = null;
+    if (this.spaceId === pending.spaceId) await this.closeCurrent();
+    this.registry.replaceSecret(pending.spaceId, pending.secret);
+    await this.switchTo(pending.spaceId);
+  }
+
+  dismissRekey(): void {
+    this.pendingRekey = null;
+  }
+
+  exportCurrent(): ExportFile | null {
+    return this.space ? exportSpace(this.space, this.spaceName) : null;
+  }
+
+  /** Imports an export file into a new local space. Throws ImportError on bad files. */
+  async importFile(text: string): Promise<void> {
+    const data = parseExport(text);
+    await this.switchTo(this.registry.addLocal());
+    const space = this.space;
+    if (!space) return;
+    space.setName(data.name || 'Imported lists');
+    importInto(space, data);
   }
 
   async createSpace(): Promise<void> {
@@ -143,7 +241,7 @@ export class AppState {
     const id = this.spaceId;
     const secret = id ? this.registry.secretOf(id) : null;
     const doc = this.opened?.space.doc;
-    if (!secret || !doc || this.session) return;
+    if (!id || !secret || !doc || this.session || this.registry.get(id)?.moved) return;
     const token = this.switchToken;
     const keys = await deriveKeys(secret);
     if (token !== this.switchToken || this.session) return;
@@ -156,6 +254,19 @@ export class AppState {
     this.mailbox = mailbox;
     this.relay = mailbox.status;
     this.cleanups.push(mailbox.onStatus((status) => (this.relay = status)));
+
+    const onMoved = () => {
+      if (this.session === session) this.markMoved(id, secret);
+    };
+    this.cleanups.push(session.onMoved(onMoved), mailbox.onMoved(onMoved));
+  }
+
+  /** The key of the open space was retired by someone else: stop syncing it. */
+  private markMoved(id: string, secret: Uint8Array) {
+    this.registry.setMoved(id, secret);
+    this.stopSync();
+    this.moved = true;
+    this.refreshSpaces();
   }
 
   private stopSync() {
@@ -173,28 +284,56 @@ export class AppState {
     const closing = this.opened?.close() ?? Promise.resolve();
     this.opened = null;
     this.spaceId = null;
+    this.moved = false;
     return closing.catch((error: unknown) => console.error(error));
   }
 
   /**
-   * Reads a share link from the URL fragment, registers the space and removes
-   * the fragment from the address bar. Returns the space id to open, if any.
+   * Reads a share link from the URL fragment and removes the fragment from the
+   * address bar. Returns the space id to open, if it can be opened right away.
+   * A protected link waits for its passphrase (pendingUnlock), and a new key
+   * for a known space waits for confirmation (pendingRekey).
    */
   private consumeShareLink(): string | null {
     if (!location.hash) return null;
-    const info = parseShareFragment(location.hash);
+    const link = parseLink(location.hash);
     history.replaceState(history.state, '', location.pathname + location.search);
-    if (!info) {
+    if (!link) {
       this.notice = 'That link is not a valid share link.';
       return null;
     }
-    if (!this.registry.addShared(info.spaceId, info.secret)) {
-      this.notice =
-        'This device already has a different copy of that space, so the link was ignored.';
+    if (link.kind === 'protected') {
+      this.pendingUnlock = link;
       return null;
     }
+    return this.acceptLink(link.spaceId, link.secret);
+  }
+
+  private acceptLink(spaceId: string, secret: Uint8Array<ArrayBuffer>): string | null {
+    const existing = this.registry.get(spaceId);
+    if (existing && this.registry.secretOf(spaceId) !== null && !this.sameSecret(spaceId, secret)) {
+      // Never switch keys silently: a link with a known space id and a different
+      // key is either a reset link from a friend, or someone trying to take over.
+      this.pendingRekey = { spaceId, secret, name: existing.name || DEFAULT_SHARED_NAME };
+      return null;
+    }
+    if (existing && this.registry.secretOf(spaceId) === null) {
+      // A local space with the same id cannot happen by accident (ids are random).
+      this.notice = 'That link does not match any space on this device.';
+      return null;
+    }
+    this.registry.addShared(spaceId, secret);
     this.refreshSpaces();
-    return info.spaceId;
+    return spaceId;
+  }
+
+  private sameSecret(spaceId: string, secret: Uint8Array): boolean {
+    const current = this.registry.secretOf(spaceId);
+    return current !== null && current.every((b, i) => b === secret[i]);
+  }
+
+  private appUrl(): string {
+    return location.origin + location.pathname;
   }
 
   private cacheName() {

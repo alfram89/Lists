@@ -143,6 +143,21 @@ describe('sync session', () => {
   });
 });
 
+describe('moved announcements', () => {
+  it('tells connected peers that the key was retired', async () => {
+    const keys = await deriveKeys(generateSecret());
+    const hub = createHub();
+    const alice = connect(new Space(), keys, hub.factory);
+    const bob = connect(new Space(new Y.Doc()), keys, hub.factory);
+    await waitFor(() => alice.status.devices === 1 && bob.status.devices === 1);
+
+    let moved = 0;
+    bob.onMoved(() => moved++);
+    await alice.announceMoved();
+    await waitFor(() => moved === 1);
+  });
+});
+
 describe('local channel transport', () => {
   it('syncs between tabs over BroadcastChannel', async () => {
     const keys = await deriveKeys(generateSecret());

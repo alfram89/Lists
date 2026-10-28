@@ -3,6 +3,7 @@
   import { AppState } from './app-state.svelte';
   import Overview from './Overview.svelte';
   import ListView from './ListView.svelte';
+  import JoinPrompts from './JoinPrompts.svelte';
 
   interface OpenList {
     space: string;
@@ -69,6 +70,8 @@
       <button class="btn" onclick={() => (app.notice = null)}>OK</button>
     </div>
   {/if}
+
+  <JoinPrompts {app} />
 
   {#if app.error}
     <p class="status" role="alert">{app.error}</p>

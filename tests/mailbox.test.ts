@@ -247,6 +247,35 @@ describe('relay mailbox', () => {
     expect(b.status.pending).toBe(false);
   });
 
+  it('retires a room: the marker replaces the snapshot and stops other peers', async () => {
+    const keys = await deriveKeys(generateSecret());
+    const net = network(URLS);
+    const alice = new Space();
+    const aliceBox = attach(alice, keys, net);
+    await waitFor(() => aliceBox.status.ready);
+    alice.createList('Before reset');
+    const relayA = net.relays.get(URLS[0]!)!;
+    await waitFor(() => relayA.events.some(isSnapshot) && !aliceBox.needsSnapshot());
+    const snapshotBefore = relayA.events.find(isSnapshot)!;
+
+    expect(await aliceBox.publishMoved()).toBe(true);
+    const marker = relayA.events.find(isSnapshot)!;
+    expect(marker.id).not.toBe(snapshotBefore.id);
+    aliceBox.destroy();
+
+    // Bob, still on the old key, opens the space: he is told it moved, and he
+    // does not republish his copy over the marker.
+    const bob = new Space(new Y.Doc());
+    bob.createList('Offline edit on the old key');
+    const bobBox = attach(bob, keys, net);
+    let moved = false;
+    bobBox.onMoved(() => (moved = true));
+    await waitFor(() => moved);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(relayA.events.find(isSnapshot)!.id).toBe(marker.id);
+    expect(bobBox.status.pending).toBe(false);
+  });
+
   it('does not see spaces with other keys', async () => {
     const net = network(URLS);
     const alice = new Space();

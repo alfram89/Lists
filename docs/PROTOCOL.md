@@ -1,8 +1,9 @@
 # Protocol specification
 
 Status: **version 1, draft.** The share link, key derivation, message format, sync
-protocol, the WebRTC and BroadcastChannel transports (phase 2) and the Nostr mailbox
-(phase 3) are implemented. Access levels (phase 4) are still design only. Formats may
+protocol, the WebRTC and BroadcastChannel transports (phase 2), the Nostr mailbox
+(phase 3), passphrase-protected links and key rotation (phase 4) are implemented.
+Read-only access is still design only. Formats may
 change until version 1 is frozen; every format carries a version number so it can
 evolve later without breaking old links.
 
@@ -38,12 +39,32 @@ characters, and `k` must be canonical unpadded base64url that decodes to exactly
 bytes. Anything else is rejected and nothing is stored. If the device already knows
 the space id with a different secret, the link is ignored.
 
-Planned later (phase 4):
+### Passphrase-protected links
 
-- `r=1`: read-only link. It carries a read key instead of the full secret (see "Access
-  levels").
-- `p=1`: a passphrase is required. The key is then derived from `k` and the passphrase
-  with Argon2id.
+```
+https://<host>/<path>/#v=1&s=<spaceId>&a=<salt>&w=<wrapped>
+```
+
+| Parameter | Meaning                                                                       |
+| --------- | ----------------------------------------------------------------------------- |
+| `a`       | 16 random bytes, base64url: the Argon2id salt                                 |
+| `w`       | 60 bytes, base64url: nonce (12) and AES-256-GCM ciphertext of the secret (48) |
+
+The space secret is wrapped (`src/crypto/passphrase.ts`):
+
+1. The passphrase is normalised to Unicode NFC and trimmed. At least 8 characters.
+2. `kek = Argon2id(passphrase, salt, t = 2, m = 64 MiB, p = 1, 32 bytes)`, in plain
+   JavaScript (`@noble/hashes`), so the CSP needs no `wasm-unsafe-eval`. It takes about
+   a second on a laptop and a few seconds on a phone, once per join.
+3. `w = nonce || AES-256-GCM(kek, nonce, secret, ad = "lists/v1/wrap:" + spaceId)`.
+
+The associated data binds the wrapped secret to its space id, so it cannot be pasted
+into a link for another space. A wrong passphrase fails the GCM tag check. A link is
+either plain (`k`) or protected (`a` and `w`), never both. Each protected link has its
+own salt, so the same space can have several protected links with different
+passphrases. Resetting the space's link (see "Key rotation") invalidates all of them.
+
+Planned later: `r=1` for read-only links (see "Access levels").
 
 ## Key derivation
 
@@ -93,6 +114,7 @@ plain   = type (1 byte) || payload length (uint32, big endian) || payload || zer
   | `0x01` | `Update`        | An incremental Yjs update                               |
   | `0x02` | `StateResponse` | The Yjs updates the requester is missing, as one update |
   | `0x04` | `StateRequest`  | The sender's Yjs state vector                           |
+  | `0x05` | `Moved`         | Empty. This key is retired (see "Key rotation")         |
 
   `0x03` is reserved for presence.
 
@@ -230,21 +252,45 @@ uploaded the next time they open the app.
 relays (most relays reject events above about 128 KB); they still sync peer to peer.
 Shopping lists are far below this.
 
-## Access levels (phase 4)
+## Key rotation (phase 4, implemented)
+
+"Reset share link" gives a space a new secret (`AppState.resetShareLink`):
+
+1. A sealed `Moved` message (type `0x05`, empty payload) is sent to every connected
+   peer on the old key.
+2. On the relays, the old room's snapshot is replaced by a sealed `Moved` marker (same
+   `d` tag `snapshot`, newer `created_at`). This also removes the encrypted copy of the
+   space from them; old updates expire on their own.
+3. The device switches to a new random secret, publishes the full space in the new
+   room, and shows the new link.
+
+A device on the old key that receives `Moved` (from a peer, or as the snapshot on a
+relay) stops syncing that space, keeps its local copy, records the space as moved and
+shows a notice. It never republishes over the marker.
+
+When a device opens a link for a space id it already has, with a different secret, it
+does **not** switch silently: the user must confirm "Use the new link". Otherwise anyone
+who learned a space id from an old link could send a link with their own key and
+quietly receive everything the victim adds from then on. Accepting replaces the secret
+and clears the moved state; the local copy merges into the new room.
+
+Limitations: anyone with the old key can also send `Moved` (which only stops syncing on
+the old key, where they already had access), and a peer that publishes a snapshot on
+the old key before seeing the marker can overwrite it, so a few devices may keep
+syncing on the old key among themselves until they get the new link.
+
+## Access levels (deferred)
 
 - **Full access:** holds the space secret.
-- **Read-only:** holds `encKey` and the public half of a write-signing key, but not the
-  private half. Writers sign every Yjs update with Ed25519 inside the sealed message,
-  and every client verifies the signature before applying it. A read-only peer can
-  therefore decrypt but cannot produce updates others will accept.
-- **Key rotation:** create a new space secret, copy the current state into the new
-  room, and leave a final sealed "moved" message in the old room. Only people who are
-  given the new link can follow.
+- **Read-only** (not implemented): holds `encKey` and the public half of a write-signing
+  key, but not the private half. Writers sign every Yjs update with Ed25519 inside the
+  sealed message, and every client verifies the signature before applying it. A
+  read-only peer can therefore decrypt but cannot produce updates others will accept.
 
 ## Open questions
 
 - Which public relays work best for Trystero signalling in practice. The current list
-  is a starting point and will become user-configurable in phase 3.
+  is a starting point.
 - How long public relays actually keep events in practice, and whether 14 days of
   updates plus a daily snapshot is the right balance.
 - User-chosen relays. The CSP currently allows only the built-in list; allowing

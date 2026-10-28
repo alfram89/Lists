@@ -100,6 +100,9 @@ export class RelayMailbox {
   private readonly timing: MailboxTiming;
   private readonly now: () => number;
   private readonly listeners = new Set<(status: MailboxStatus) => void>();
+  private readonly movedListeners = new Set<() => void>();
+  /** The room's key was retired: a `Moved` marker replaced the snapshot. */
+  private moved = false;
 
   private latestSnapshot: Snapshot | null = null;
   /** created_at of every update event seen, to count those newer than the snapshot. */
@@ -158,6 +161,23 @@ export class RelayMailbox {
     return () => this.listeners.delete(listener);
   }
 
+  /** Called when the relays say this space moved to a new key. */
+  onMoved(listener: () => void): () => void {
+    this.movedListeners.add(listener);
+    return () => this.movedListeners.delete(listener);
+  }
+
+  /**
+   * Retires this room on the relays: replaces the snapshot with a `Moved`
+   * marker, which also removes the encrypted copy of the space from them.
+   * Old updates expire on their own. Returns true if any relay accepted it.
+   */
+  async publishMoved(): Promise<boolean> {
+    this.stopPublishing();
+    const createdAt = Math.max(this.now(), (this.latestSnapshot?.createdAt ?? 0) + 1);
+    return this.publish(MessageType.Moved, new Uint8Array(0), [['d', SNAPSHOT_TAG]], createdAt);
+  }
+
   destroy(): void {
     if (this.closed) return;
     this.closed = true;
@@ -169,6 +189,15 @@ export class RelayMailbox {
     for (const relay of this.relays) relay.close();
     this.shadow.destroy();
     this.listeners.clear();
+    this.movedListeners.clear();
+  }
+
+  private stopPublishing() {
+    this.moved = true;
+    this.dirty = false;
+    clearTimeout(this.flushTimer);
+    clearTimeout(this.retryTimer);
+    clearTimeout(this.snapshotTimer);
   }
 
   // ---- Receiving -------------------------------------------------------------
@@ -224,6 +253,14 @@ export class RelayMailbox {
     const message = sealed && (await open(this.keys, sealed));
     if (!message || this.closed) return; // not ours, or tampered: ignore
 
+    if (message.type === MessageType.Moved) {
+      if (!isSnapshot || this.moved) return;
+      this.stopPublishing();
+      this.emitStatus();
+      for (const listener of this.movedListeners) listener();
+      return;
+    }
+
     try {
       Y.applyUpdate(this.doc, message.payload, this);
       Y.applyUpdate(this.shadow, message.payload);
@@ -243,7 +280,7 @@ export class RelayMailbox {
   // ---- Sending ---------------------------------------------------------------
 
   private readonly onDocUpdate = (_update: Uint8Array, origin: unknown) => {
-    if (origin === this || this.closed) return;
+    if (origin === this || this.closed || this.moved) return;
     // Local edits have no origin; anything else came from a peer.
     const fromPeer = origin !== null && origin !== undefined;
     this.dirty = true;
@@ -278,7 +315,7 @@ export class RelayMailbox {
    * space was shared) never reached a relay.
    */
   private async flush() {
-    if (this.closed || this.flushing || !this.dirty || !this.ready) return;
+    if (this.closed || this.moved || this.flushing || !this.dirty || !this.ready) return;
     if (!this.relays.some((r) => r.connected)) return; // retried when a relay connects
     if (this.relaysUpToDate()) {
       this.dirty = false; // e.g. a peer's change that the relays already delivered
@@ -330,7 +367,7 @@ export class RelayMailbox {
   }
 
   private async maybeSnapshot() {
-    if (this.closed || !this.ready || this.flushing || this.dirty) return;
+    if (this.closed || this.moved || !this.ready || this.flushing || this.dirty) return;
     if (!this.relays.some((r) => r.connected) || !this.needsSnapshot()) return;
     const state = Y.encodeStateAsUpdate(this.doc);
     const createdAt = this.now();

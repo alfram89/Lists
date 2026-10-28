@@ -139,7 +139,8 @@ The full threat model is in [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
 - **Language and build:** TypeScript, Vite, vite-plugin-pwa
 - **UI:** Svelte 5 (compiled, small runtime)
 - **Sync:** Yjs, y-indexeddb, Trystero, nostr-tools
-- **Crypto:** WebCrypto (native). Argon2id via WASM, only for passphrases
+- **Crypto:** WebCrypto (native), `@noble/secp256k1` for Nostr signatures and
+  `@noble/hashes` for Argon2id (passphrases), both pure JavaScript
 - **Tests:** Vitest (unit tests, including crypto) and Playwright (two browsers syncing
   with each other)
 - **Licence:** AGPL-3.0
@@ -216,18 +217,27 @@ Moved to phase 4: **relay selection.** The Content Security Policy only allows t
 built-in relays. Letting users add their own means allowing any `wss:` host, which
 weakens that protection, so it needs a deliberate decision.
 
-### Phase 4: Hardening
+### Phase 4: Hardening ✅ (prototype)
 
-- [ ] Read-only links, passphrases, key rotation
+- [x] Passphrase-protected links: the key in the link is wrapped with Argon2id (pure
+      JavaScript, so the CSP stays free of `wasm-unsafe-eval`)
+- [x] Key rotation ("Reset share link"): a new key, a "moved" notice to everyone on the
+      old key (directly and by replacing the snapshot on the relays), and an explicit
+      confirmation before a device accepts a new key for a space it already has
+- [x] JSON export/import of a space, as a backup and to move lists without sharing
+- [x] Padding of encrypted messages (done in phase 2)
+- [x] Space registry safe against several open tabs overwriting each other
+
+Deferred, to be decided later:
+
+- [ ] Read-only links (design in [`docs/PROTOCOL.md`](docs/PROTOCOL.md), "Access
+      levels")
 - [ ] Relay selection (see the CSP trade-off under phase 3)
-- [ ] _To be decided:_ an expiration (e.g. 90 days, NIP-40) on mailbox snapshots too.
+- [ ] An expiration (e.g. 90 days, NIP-40) on mailbox snapshots too.
       Snapshots are refreshed whenever the space is used, so active spaces are
       unaffected, while encrypted copies of abandoned spaces disappear from relays by
       themselves. Trade-off: a new device cannot fetch a space nobody has opened for
       longer than that until someone with a copy opens the app again.
-- [x] Padding of encrypted messages (done in phase 2)
-- [ ] JSON export/import
-- [ ] External security review, or peer review of the crypto
 
 ### Phase 5: Later
 
