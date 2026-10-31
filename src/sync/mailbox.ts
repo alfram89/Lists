@@ -89,8 +89,16 @@ export interface MailboxOptions {
 }
 
 interface Snapshot {
-  id: string;
+  /** created_at as published; a new snapshot must be later to replace it on relays. */
   createdAt: number;
+  /**
+   * The snapshot's time as far as this device trusts it: created_at, but never
+   * later than when it was received. A device with a wrong clock can date a
+   * snapshot in the future; trusting that date would make every later update
+   * look older than the snapshot, so nothing would be fetched or re-snapshotted
+   * and the mailbox would freeze for everyone.
+   */
+  effectiveAt: number;
 }
 
 export class RelayMailbox {
@@ -174,8 +182,21 @@ export class RelayMailbox {
    */
   async publishMoved(): Promise<boolean> {
     this.stopPublishing();
-    const createdAt = Math.max(this.now(), (this.latestSnapshot?.createdAt ?? 0) + 1);
-    return this.publish(MessageType.Moved, new Uint8Array(0), [['d', SNAPSHOT_TAG]], createdAt);
+    return this.publish(
+      MessageType.Moved,
+      new Uint8Array(0),
+      [['d', SNAPSHOT_TAG]],
+      this.snapshotTime(),
+    );
+  }
+
+  /**
+   * created_at for a new snapshot: now, or just after the current snapshot if
+   * that one is dated later (a wrong clock elsewhere). Relays keep only the
+   * latest addressable event, so anything earlier would be ignored.
+   */
+  private snapshotTime(): number {
+    return Math.max(this.now(), (this.latestSnapshot?.createdAt ?? 0) + 1);
   }
 
   destroy(): void {
@@ -205,12 +226,17 @@ export class RelayMailbox {
   private onRelayOpen(relay: RelayConnection) {
     const author = { kinds: [MAILBOX_KIND], authors: [this.keys.nostrPubkey] };
     const snapshotSub = `s${randomId().slice(0, 8)}`;
+    const received: Promise<void>[] = [];
     relay.subscribe(snapshotSub, [{ ...author, '#d': [SNAPSHOT_TAG], limit: 1 }], {
-      onEvent: (event) => void this.receive(event),
-      onEose: () => {
+      onEvent: (event) => void received.push(this.receive(event)),
+      onEose: async () => {
         relay.unsubscribe(snapshotSub);
+        // Decrypting the snapshot is asynchronous: wait for it, so `since`
+        // reflects the snapshot this relay actually has.
+        await Promise.all(received);
+        if (this.closed) return;
         const since = this.latestSnapshot
-          ? this.latestSnapshot.createdAt - SINCE_MARGIN_SECONDS
+          ? this.latestSnapshot.effectiveAt - SINCE_MARGIN_SECONDS
           : this.now() - UPDATE_TTL_SECONDS;
         relay.subscribe(`u${randomId().slice(0, 8)}`, [{ ...author, since }], {
           onEvent: (event) => void this.receive(event),
@@ -243,7 +269,6 @@ export class RelayMailbox {
   private async receive(event: NostrEvent) {
     if (this.closed || this.seen.has(event.id)) return;
     if (event.pubkey !== this.keys.nostrPubkey || event.kind !== MAILBOX_KIND) return;
-    this.seen.add(event.id);
 
     const d = tagValue(event, 'd') ?? '';
     const isSnapshot = d === SNAPSHOT_TAG;
@@ -252,6 +277,11 @@ export class RelayMailbox {
     const sealed = fromBase64(event.content);
     const message = sealed && (await open(this.keys, sealed));
     if (!message || this.closed) return; // not ours, or tampered: ignore
+    // Only an event that decrypts counts as seen. Otherwise a malicious relay
+    // could send a forged copy under a real event's id first, and the real one
+    // from an honest relay would then be skipped.
+    if (this.seen.has(event.id)) return;
+    this.seen.add(event.id);
 
     if (message.type === MessageType.Moved) {
       if (!isSnapshot || this.moved) return;
@@ -270,10 +300,13 @@ export class RelayMailbox {
 
     if (isSnapshot) {
       if (!this.latestSnapshot || event.created_at > this.latestSnapshot.createdAt) {
-        this.latestSnapshot = { id: event.id, createdAt: event.created_at };
+        this.latestSnapshot = {
+          createdAt: event.created_at,
+          effectiveAt: Math.min(event.created_at, this.now()),
+        };
       }
     } else {
-      this.updateTimes.push(event.created_at);
+      this.updateTimes.push(Math.min(event.created_at, this.now()));
     }
   }
 
@@ -361,8 +394,9 @@ export class RelayMailbox {
   needsSnapshot(): boolean {
     const snapshot = this.latestSnapshot;
     if (!snapshot) return true;
-    if (this.now() - snapshot.createdAt > SNAPSHOT_MAX_AGE_SECONDS) return true;
-    if (this.updateTimes.some((t) => t >= snapshot.createdAt)) return true;
+    const now = this.now();
+    if (now - snapshot.effectiveAt > SNAPSHOT_MAX_AGE_SECONDS) return true;
+    if (this.updateTimes.some((t) => t >= snapshot.effectiveAt)) return true;
     return !this.relaysUpToDate();
   }
 
@@ -370,7 +404,7 @@ export class RelayMailbox {
     if (this.closed || this.moved || !this.ready || this.flushing || this.dirty) return;
     if (!this.relays.some((r) => r.connected) || !this.needsSnapshot()) return;
     const state = Y.encodeStateAsUpdate(this.doc);
-    const createdAt = this.now();
+    const createdAt = this.snapshotTime();
     const accepted = await this.publish(
       MessageType.StateResponse,
       state,
@@ -379,7 +413,7 @@ export class RelayMailbox {
     );
     if (!accepted || this.closed) return;
     Y.applyUpdate(this.shadow, state);
-    this.latestSnapshot = { id: '', createdAt };
+    this.latestSnapshot = { createdAt, effectiveAt: Math.min(createdAt, this.now()) };
     this.updateTimes = [];
   }
 

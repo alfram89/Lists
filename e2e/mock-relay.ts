@@ -15,7 +15,12 @@ export class MockRelay extends NostrRelay {
     await context.routeWebSocket(/^wss:\/\//, (ws) => {
       const client = this.connect((message) => ws.send(message));
       ws.onMessage((raw) => client.receive(String(raw)));
-      ws.onClose(() => client.close());
+      // Handling close ourselves means Playwright no longer completes the closing
+      // handshake, so finish it; otherwise the page never sees the socket close.
+      ws.onClose((code, reason) => {
+        client.close();
+        void ws.close({ code, reason });
+      });
     });
   }
 }

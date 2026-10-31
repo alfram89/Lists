@@ -54,8 +54,10 @@ The space secret is wrapped (`src/crypto/passphrase.ts`):
 
 1. The passphrase is normalised to Unicode NFC and trimmed. At least 8 characters.
 2. `kek = Argon2id(passphrase, salt, t = 2, m = 64 MiB, p = 1, 32 bytes)`, in plain
-   JavaScript (`@noble/hashes`), so the CSP needs no `wasm-unsafe-eval`. It takes about
-   a second on a laptop and a few seconds on a phone, once per join.
+   JavaScript (`@noble/hashes`), so the CSP needs no `wasm-unsafe-eval`. It runs in a
+   Web Worker (`src/crypto/argon2.worker.ts`, allowed by `worker-src 'self'`) so the
+   page stays responsive. It takes about a second on a laptop and a few seconds on a
+   phone, once per join.
 3. `w = nonce || AES-256-GCM(kek, nonce, secret, ad = "lists/v1/wrap:" + spaceId)`.
 
 The associated data binds the wrapped secret to its space id, so it cannot be pasted
@@ -213,7 +215,17 @@ Two kinds, told apart by the `d` tag:
 
 Every event is decrypted with `encKey` and applied to the document. Events that fail to
 decrypt are ignored, so neither a relay nor anyone without the link can inject data,
-even under the room's author key. The mailbox counts as ready once one relay has sent
+even under the room's author key. An event id is only marked as seen after its event
+decrypts; otherwise a malicious relay could send a forged copy under a real event's id
+first and make the client skip the real one from an honest relay.
+
+**Clocks.** `created_at` comes from the publishing device's clock, which can be wrong.
+A snapshot's time is therefore trusted only up to the moment it was received
+(`effectiveAt = min(created_at, now)`): that value sets `since` for fetching updates
+and decides which updates are newer than the snapshot. A new snapshot is dated
+`max(now, latest snapshot's created_at + 1)`, so it replaces even a snapshot that a
+device with a fast clock dated in the future. `since` is computed only after the
+fetched snapshot has been decrypted. The mailbox counts as ready once one relay has sent
 everything (plus a short grace period for the others), or after 8 seconds.
 
 **Shadow document.** The mailbox keeps a second Y.Doc with everything known to be on

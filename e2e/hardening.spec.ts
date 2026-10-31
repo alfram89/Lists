@@ -147,3 +147,47 @@ test('export to a file and import it again', async ({ browser }) => {
   await expect(page.getByRole('alert')).toHaveText(/not a Lists export file/);
   await context.close();
 });
+
+test('cancelling while a passphrase is being checked does not join', async ({ browser }) => {
+  const relay = new MockRelay();
+  const alice = await device(browser, relay);
+  await alice.page.goto('/');
+  await alice.page.getByRole('button', { name: 'Share this space' }).click();
+  await alice.page.getByRole('button', { name: 'Protect with a passphrase…' }).click();
+  await alice.page.locator('#share-passphrase').fill('purple elephant dances');
+  await alice.page.getByRole('button', { name: 'Create protected link' }).click();
+  await expect(alice.page.getByText('This link is protected.')).toBeVisible();
+  const link = await alice.page.locator('#share-link').inputValue();
+
+  const bob = await device(browser, relay);
+  await bob.page.goto(link);
+  await bob.page.locator('#unlock-passphrase').fill('purple elephant dances');
+  await bob.page.getByRole('button', { name: 'Open' }).click();
+  await bob.page.getByRole('button', { name: 'Cancel' }).click();
+  // Give the key derivation time to finish in the background.
+  await bob.page.waitForTimeout(4000);
+  await expect(bob.page.getByRole('status')).toHaveText('Only on this device');
+  await openSpaceMenu(bob.page);
+  await expect(bob.page.locator('.space-option')).toHaveCount(1);
+
+  await alice.context.close();
+  await bob.context.close();
+});
+
+test('resetting a link without any relay says the others were not told', async ({ browser }) => {
+  const context = await browser.newContext();
+  // Every relay refuses the connection.
+  await context.routeWebSocket(/^wss:\/\//, (ws) => void ws.close());
+  const page = await context.newPage();
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Share this space' }).click();
+  await page.getByRole('button', { name: 'Close' }).click();
+
+  page.on('dialog', (dialog) => dialog.accept());
+  await openSpaceMenu(page);
+  await page.getByRole('button', { name: 'Reset share link…' }).click();
+  await expect(page.locator('#share-link')).toBeVisible();
+  await page.getByRole('button', { name: 'Close' }).click();
+  await expect(page.getByRole('alert')).toHaveText(/no relay could be reached/);
+  await context.close();
+});

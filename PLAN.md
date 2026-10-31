@@ -241,6 +241,8 @@ Deferred, to be decided later:
 
 ### Phase 5: Later
 
+- [ ] Undo and a recoverable trash for deleted items and lists, since any member can
+      delete anything (see "Trust between members" in the threat model)
 - [ ] Suggestions based on earlier items, categories and store order
 - [ ] Dark mode toggle (automatic dark mode already follows the OS), i18n
       (Norwegian/English)

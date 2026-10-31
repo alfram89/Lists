@@ -213,3 +213,35 @@ test('changes reach someone who opens the link after the sender has left', async
   expect(errors).toEqual([]);
   await aliceAgain.close();
 });
+
+test('leaving a shared space closes every relay connection, and they come back', async ({
+  browser,
+}) => {
+  const relay = new MockRelay();
+  const alice = await browser.newContext();
+  await relay.attach(alice);
+  const page = await alice.newPage();
+  await page.goto('/');
+  await createList(page, 'Groceries', ['Milk']);
+  await page.getByRole('button', { name: 'Back to all lists' }).click();
+  const link = await shareLink(page);
+  await expect(page.getByRole('status')).toHaveText(/up to date/);
+  expect(relay.openConnections).toBeGreaterThan(0);
+
+  // Switch to a local space: nothing should stay connected.
+  await page.locator('.space-btn').click();
+  await page.getByRole('button', { name: 'New space' }).click();
+  await expect(page.getByRole('status')).toHaveText('Only on this device');
+  await expect.poll(() => relay.openConnections).toBe(0);
+
+  // Back to the shared space: signalling works again, so a peer can connect.
+  await page.locator('.space-btn').click();
+  await page.getByRole('button', { name: /Shared lists/ }).click();
+  const bob = await browser.newContext();
+  await relay.attach(bob);
+  const bobPage = await bob.newPage();
+  await bobPage.goto(link);
+  await expect(page.getByRole('status')).toHaveText('Shared · up to date · 1 other device online');
+  await alice.close();
+  await bob.close();
+});

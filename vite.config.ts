@@ -54,6 +54,10 @@ export default defineConfig({
     target: 'es2022',
     sourcemap: true,
   },
+  // Module workers (src/crypto/argon2.worker.ts) are emitted as ES modules.
+  worker: {
+    format: 'es',
+  },
   plugins: [
     svelte(),
     contentSecurityPolicy(),

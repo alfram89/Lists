@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import { ImportError, exportFileName } from '../core/export';
+  import { ImportError, MAX_IMPORT_BYTES, exportFileName } from '../core/export';
   import { MAX_LIST_NAME_LENGTH } from '../core/space';
   import type { AppState } from './app-state.svelte';
   import Icon from './Icon.svelte';
@@ -79,6 +79,9 @@
     busy = true;
     try {
       shareLink = await app.resetShareLink();
+    } catch (error) {
+      console.error(error);
+      app.notice = 'The share link could not be reset. Nothing was changed; please try again.';
     } finally {
       busy = false;
     }
@@ -106,6 +109,11 @@
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = '';
     if (!file) return;
+    // Check the size before reading, so a huge file cannot freeze the app.
+    if (file.size > MAX_IMPORT_BYTES) {
+      app.notice = 'The file is too large.';
+      return;
+    }
     try {
       await app.importFile(await file.text());
     } catch (error) {
