@@ -18,11 +18,12 @@
     unlocking = true;
     wrong = false;
     try {
-      if (await app.unlock(passphrase)) {
-        passphrase = '';
-        dialog?.close();
-      } else {
+      const result = await app.unlock(passphrase);
+      if (result === 'wrong') {
         wrong = true;
+      } else {
+        passphrase = '';
+        if (dialog?.open) dialog.close();
       }
     } finally {
       unlocking = false;

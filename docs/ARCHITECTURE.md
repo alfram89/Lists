@@ -25,7 +25,7 @@ src/sync/      SyncSession: keeps a Y.Doc in sync over any number of transports.
    │           config.ts lists every network endpoint; the CSP is built from it.
    │
 src/crypto/    Key derivation (HKDF), sealed messages (AES-GCM), share links,
-               passphrase wrapping (Argon2id).
+               passphrase wrapping (Argon2id, in a Web Worker).
 src/core/export.ts  JSON export/import of a space (content only, never keys).
 ```
 

@@ -60,6 +60,11 @@ export class NostrRelay {
     };
   }
 
+  /** Connections that are currently open. */
+  get openConnections(): number {
+    return this.clients.size;
+  }
+
   /** Removes stored events, e.g. to simulate expiry. */
   removeWhere(predicate: (event: NostrEvent) => boolean): void {
     this.stored = this.stored.filter((e) => !predicate(e));

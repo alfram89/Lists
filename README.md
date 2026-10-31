@@ -21,7 +21,7 @@ no tracking, and no backend server that can read your lists.
 - Works offline and can be installed to your home screen (PWA)
 - Light and dark mode, follows your system setting
 - Lists you have not shared never leave your device; a strict Content Security Policy
-  blocks everything except the signalling relays
+  blocks every connection except to the app itself and the five relays it uses
 
 ## How it works
 

@@ -2,13 +2,24 @@ import { afterEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { Space } from '../src/core/space';
 import { deriveKeys, generateSecret, type SpaceKeys } from '../src/crypto/keys';
+import { MessageType, seal } from '../src/crypto/seal';
 import { RelayMailbox } from '../src/sync/mailbox';
+import { signEvent, type NostrEvent } from '../src/sync/nostr/event';
 import type { SocketFactory, SocketLike } from '../src/sync/nostr/relay';
 import { NostrRelay } from './support/nostr-relay';
 
-/** Connects the mailbox's WebSockets to in-memory relays, one per URL. */
-function network(urls: string[]) {
-  const relays = new Map(urls.map((url) => [url, new NostrRelay({ verify: true })]));
+/**
+ * Connects the mailbox's WebSockets to in-memory relays, one per URL.
+ * `options.malicious` relays skip validation (so forged events can be planted),
+ * and `options.delayMs` slows a relay's replies.
+ */
+function network(
+  urls: string[],
+  options: { malicious?: string[]; delayMs?: Record<string, number> } = {},
+) {
+  const relays = new Map(
+    urls.map((url) => [url, new NostrRelay({ verify: !options.malicious?.includes(url) })]),
+  );
   const offline = new Set<string>();
   const sockets = new Set<SocketLike>();
 
@@ -40,7 +51,7 @@ function network(urls: string[]) {
       client = relays.get(url)!.connect((message) =>
         setTimeout(() => {
           if (socket.readyState === 1) socket.onmessage?.({ data: message } as MessageEvent);
-        }, 0),
+        }, options.delayMs?.[url] ?? 0),
       );
       socket.readyState = 1;
       sockets.add(socket);
@@ -276,6 +287,60 @@ describe('relay mailbox', () => {
     expect(bobBox.status.pending).toBe(false);
   });
 
+  it('a malicious relay cannot hide a real event by sending a forged copy first', async () => {
+    const keys = await deriveKeys(generateSecret());
+    const [evilUrl, honestUrl] = URLS as [string, string];
+    const net = network(URLS, { malicious: [evilUrl], delayMs: { [honestUrl]: 30 } });
+
+    // A real update, stored on the honest relay.
+    const alice = new Space();
+    const list = alice.createList('Real');
+    const real = await mailboxEvent(keys, Y.encodeStateAsUpdate(alice.doc), 'u:real');
+    net.relays.get(honestUrl)!.inject(real);
+    // The evil relay answers faster with the same id and garbage content.
+    net.relays.get(evilUrl)!.inject({ ...real, content: btoa('garbage'.repeat(10)) });
+
+    const bob = new Space(new Y.Doc());
+    const box = attach(bob, keys, net);
+    await waitFor(() => box.status.ready);
+    await waitFor(() => bob.getList(list) !== undefined);
+  });
+
+  it('a snapshot dated in the future does not freeze the mailbox', async () => {
+    const keys = await deriveKeys(generateSecret());
+    const net = network(URLS);
+    const now = Math.floor(Date.now() / 1000);
+
+    // A member whose clock is a year ahead publishes a snapshot.
+    const skewed = new Space();
+    const list = skewed.createList('Shared');
+    const future = await mailboxEvent(
+      keys,
+      Y.encodeStateAsUpdate(skewed.doc),
+      'snapshot',
+      now + 365 * 24 * 60 * 60,
+      MessageType.StateResponse,
+    );
+    for (const relay of net.relays.values()) relay.inject(future);
+
+    // Alice, with a correct clock, adds an item and goes idle.
+    const alice = new Space(new Y.Doc());
+    const aliceBox = attach(alice, keys, net);
+    await waitFor(() => aliceBox.status.ready && alice.getList(list) !== undefined);
+    alice.addItem(list, 'Added later');
+    const relayA = net.relays.get(URLS[0]!)!;
+    // Her snapshot must replace the future-dated one.
+    await waitFor(() => relayA.events.find(isSnapshot)?.id !== future.id);
+    aliceBox.destroy();
+
+    // Weeks later the updates have expired; a new member still gets everything.
+    for (const relay of net.relays.values()) relay.removeWhere((e) => !isSnapshot(e));
+    const carol = new Space(new Y.Doc());
+    const carolBox = attach(carol, keys, net);
+    await waitFor(() => carolBox.status.ready);
+    expect(texts(carol, list)).toEqual(['Added later']);
+  });
+
   it('does not see spaces with other keys', async () => {
     const net = network(URLS);
     const alice = new Space();
@@ -290,3 +355,22 @@ describe('relay mailbox', () => {
     expect(eve.getLists()).toEqual([]);
   });
 });
+
+/** Builds a signed mailbox event, as another member's device would publish it. */
+async function mailboxEvent(
+  keys: SpaceKeys,
+  update: Uint8Array,
+  d: string,
+  createdAt = Math.floor(Date.now() / 1000),
+  type: MessageType = MessageType.Update,
+): Promise<NostrEvent> {
+  const sealed = await seal(keys, type, update);
+  let binary = '';
+  for (const b of sealed) binary += String.fromCharCode(b);
+  return signEvent(keys.nostrSecretKey, keys.nostrPubkey, {
+    kind: 30078,
+    created_at: createdAt,
+    tags: [['d', d]],
+    content: btoa(binary),
+  });
+}

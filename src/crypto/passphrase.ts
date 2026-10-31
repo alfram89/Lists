@@ -26,8 +26,28 @@ export function normalizePassphrase(passphrase: string): string {
   return passphrase.normalize('NFC').trim();
 }
 
+/**
+ * Argon2id in a Web Worker in the browser, so the page stays responsive. Where
+ * workers are unavailable (unit tests in Node), it runs in place.
+ */
+function argon2id(password: Uint8Array, salt: Uint8Array): Promise<Uint8Array> {
+  if (typeof Worker === 'undefined') return argon2idAsync(password, salt, ARGON2_PARAMS);
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./argon2.worker.ts', import.meta.url), { type: 'module' });
+    worker.onmessage = (event: MessageEvent<Uint8Array>) => {
+      worker.terminate();
+      resolve(event.data);
+    };
+    worker.onerror = (event) => {
+      worker.terminate();
+      reject(new Error(event.message || 'Key derivation failed'));
+    };
+    worker.postMessage({ password, salt, params: ARGON2_PARAMS });
+  });
+}
+
 async function wrappingKey(passphrase: string, salt: Uint8Array): Promise<CryptoKey> {
-  const raw = await argon2idAsync(utf8(normalizePassphrase(passphrase)), salt, ARGON2_PARAMS);
+  const raw = await argon2id(utf8(normalizePassphrase(passphrase)), salt);
   return crypto.subtle.importKey('raw', new Uint8Array(raw), 'AES-GCM', false, [
     'encrypt',
     'decrypt',

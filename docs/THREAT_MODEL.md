@@ -65,7 +65,9 @@ WebRTC signalling and store encrypted changes for people who are offline.
   through keys.
 - Size-bucket padding hides exactly how much changed.
 - Only spaces that have been shared ever connect to anything. A local space opens no
-  connections, and this is checked by an end-to-end test.
+  connections, and when no shared space is open, every relay connection is closed
+  (including those WebRTC signalling would otherwise keep open). Both are checked by
+  end-to-end tests.
 - **Not protected:** signalling relays and STUN servers (Cloudflare, Google) see the
   IP addresses of peers and when they are online. WebRTC reveals the IP addresses of
   peers to each other, which is expected between people who share a list. Users who
@@ -147,6 +149,27 @@ Limitations:
   person they trust.
 - Anyone with the old key can send a "moved" notice, which stops syncing on the old
   key. This only affects people who already shared that key with them.
+- **Until a member notices a reset,** their device still uses the old key. Changes they
+  make in that time can be read by whoever was cut off, if that person is online with
+  the old key too. When the member then accepts the new link, their copy merges into
+  the new space, and with it anything the cut-off person wrote on the old key in the
+  meantime. Devices stop as soon as they see the "moved" notice (from a peer or on a
+  relay), which keeps this window short; if the reset happened while no relay was
+  reachable, the app tells the person who reset it that the others were not notified.
+
+## Trust between members
+
+Everyone who has a space's link is fully trusted, by design:
+
+- **Any member can change or delete anything,** including every list. Deletions sync
+  to everyone like any other change. There is no history and no undo yet, so a
+  mistaken or malicious "delete list" cannot be reversed from within the app. JSON
+  export is the only backup today; a recoverable trash is on the roadmap.
+- **Changes are not attributed.** Messages are authenticated as "from someone with the
+  key", not from a particular person, so the app cannot show who changed what, and a
+  member could pretend to be another.
+- A member could also flood the space with data. Text length is capped, but the number
+  of items is not.
 - There is no forward secrecy: someone who later obtains the key can decrypt old
   messages still stored on relays. Updates expire after 14 days, but the latest
   snapshot, which holds the whole space, stays until a relay drops it. Leaving a space

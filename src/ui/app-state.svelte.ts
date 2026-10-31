@@ -155,27 +155,42 @@ export class AppState {
     if (!id || !this.isShared) throw new Error('Space is not shared');
     const session = this.session;
     const mailbox = this.mailbox;
-    await Promise.race([
-      Promise.all([session?.announceMoved(), mailbox?.publishMoved()]),
-      new Promise((resolve) => setTimeout(resolve, MOVED_PUBLISH_TIMEOUT_MS)),
+    const relaysTold = await Promise.race([
+      Promise.all([session?.announceMoved(), mailbox?.publishMoved()]).then(
+        ([, accepted]) => accepted === true,
+      ),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), MOVED_PUBLISH_TIMEOUT_MS)),
     ]);
     this.stopSync();
     this.registry.replaceSecret(id, generateSecret());
     this.moved = false;
     await this.startSync();
+    if (!relaysTold) {
+      // The old link is cut off either way (everything new uses the new key),
+      // but people on it are not told, and the old encrypted copy stays on the
+      // relays until it expires or a relay drops it.
+      this.notice =
+        'The link was reset, but no relay could be reached to tell the others. The old link ' +
+        'gets no new changes, but people using it will not see that it was reset until you ' +
+        'send them the new link.';
+    }
     return this.shareLink();
   }
 
-  /** Tries a passphrase for the pending protected link. False if it is wrong. */
-  async unlock(passphrase: string): Promise<boolean> {
+  /**
+   * Tries a passphrase for the pending protected link. Deriving the key takes a
+   * few seconds; if the user cancels meanwhile, the link is not used.
+   */
+  async unlock(passphrase: string): Promise<'joined' | 'wrong' | 'cancelled'> {
     const pending = this.pendingUnlock;
-    if (!pending) return false;
+    if (!pending) return 'cancelled';
     const secret = await unwrapSecret(pending, passphrase, pending.spaceId);
-    if (!secret) return false;
+    if (this.pendingUnlock !== pending) return 'cancelled';
+    if (!secret) return 'wrong';
     this.pendingUnlock = null;
     const id = this.acceptLink(pending.spaceId, secret);
     if (id) await this.switchTo(id);
-    return true;
+    return 'joined';
   }
 
   cancelUnlock(): void {
